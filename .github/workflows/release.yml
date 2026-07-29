@@ -108,7 +108,14 @@ jobs:
             - **lite**：不含 OCR，体积约为 full 的一半
 
             文件名带 `-mac-arm64` 的是 macOS（Apple 芯片）版；其余为 Windows 版。
-            Intel Mac 暂请从源码运行。macOS 首次打开若被系统拦下，见仓库
-            《程序/docs/Mac使用说明.md》。
+            Intel Mac 暂不提供打包版，请从源码运行。
+
+            ### ⚠️ macOS 用户请先看这一句
+
+            本工具未购买苹果的开发者认证，**第一次打开一定会被系统拦下**——会提示
+            「无法验证开发者」或「已损坏，无法打开」。这是正常现象，不是软件有问题。
+            按 [《Mac 使用说明》](https://github.com/morning-cml/pdf-translator/blob/main/程序/docs/Mac使用说明.md)
+            放行**一次**即可（约 2 分钟），之后就能像普通软件一样直接双击。
+            ⚠️ **别点「移到废纸篓」。**
 
             本软件依据 AGPL-3.0 发布，源代码即本仓库。
