@@ -1,0 +1,34 @@
+{
+  "builds": [
+    {
+      "dir": "v1.0.0-full",
+      "version": "1.0.0",
+      "profile": "full",
+      "built_at": "2026-07-20T19:42:22.570347+08:00",
+      "commit": "ad9260b",
+      "dirty_worktree": true,
+      "size_mb": 457.8,
+      "kept": false
+    },
+    {
+      "dir": "v1.0.0-lite",
+      "version": "1.0.0",
+      "profile": "lite",
+      "built_at": "2026-07-20T19:27:14.854689+08:00",
+      "commit": "1ee688b",
+      "dirty_worktree": true,
+      "size_mb": 222.9,
+      "kept": false
+    },
+    {
+      "dir": "v1.0.0-full",
+      "version": "1.0.0",
+      "profile": "full",
+      "built_at": "2026-07-20T19:23:05.869957+08:00",
+      "commit": "1ee688b",
+      "dirty_worktree": true,
+      "size_mb": 428.0,
+      "kept": false
+    }
+  ]
+}

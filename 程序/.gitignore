@@ -23,4 +23,5 @@ release/*
 # 例外：版本台账必须入库——二进制不留，但"发过哪些版本"要永久可查
 # （用 release/* 而非 release/，否则目录被整体排除，下面的取反不生效）
 !release/RELEASES.md
+!release/releases.json
 *.spec
