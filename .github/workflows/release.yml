@@ -4,6 +4,7 @@ name: 构建发布
 # 两档并发布到 Releases。用法：改好 src/version.py 后 →
 #   git tag v1.0.0 && git push origin v1.0.0
 # 也可在 Actions 页手动触发（workflow_dispatch）：只构建、不发布，用于验证。
+# 无论哪种触发方式都先跑测试（test 作业），测试不过则不构建、不发布。
 on:
   push:
     tags: ["v*.*.*"]
@@ -19,7 +20,34 @@ permissions:
   contents: write        # 创建 Release 需要
 
 jobs:
+  # 测试闸门。test.yml 只认 main 分支的 push（且限 程序/** 改动），tag 推送不触发它——
+  # 没有本作业的话，打了 tag 就直接构建发布，中间没有任何测试把关。故在此重跑一遍，
+  # 不过就不构建、更不会发布。依赖用 requirements-ci.txt 最小集，跑完约 1 分钟。
+  test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: 程序
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安装依赖（最小集，跳过 OCR 重依赖以加速）
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: 运行测试
+        env:
+          PYTHONUTF8: "1"
+        run: python -m pytest tests -q
+
   build:
+    needs: test          # 测试红了就不往下走，绝不带着坏代码发版
     strategy:
       matrix:
         os: [windows-latest, macos-latest]  # macos-latest=Apple 芯片；Intel 版请在 Intel Mac 上从源码构建
