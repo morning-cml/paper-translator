@@ -107,7 +107,8 @@ def _draw_block(c: canvas.Canvas, b: Block, layout: PageLayout,
     start_size = min(max(b.size, 5.0), 20.0)
     min_size = 4.0 if getattr(b, "cell_rect", None) else 5.0
     laid = layout_block(b.translation or "", fdims, box, start_size, _measure,
-                        avoid=avoid + (placed or []), min_size=min_size)
+                        avoid=avoid + (placed or []), min_size=min_size,
+                        align=getattr(b, "align", "left"))
     if placed is not None:   # 记录本块占位，同页后续块逐行避让，杜绝叠印
         placed.extend((it.x, it.y_top, it.x + it.w, it.y_top + it.h)
                       for it in laid.items)
@@ -162,7 +163,8 @@ def build_output(input_path: str, output_path: str,
     try:
         writer = PdfWriter()
         reader_main = PdfReader(input_path)
-        reader_orig = PdfReader(input_path) if mode in ("bilingual", "sidebyside") else None
+        reader_orig = (PdfReader(input_path)
+                       if mode in ("bilingual", "sidebyside", "updown") else None)
 
         for i, page in enumerate(reader_main.pages):
             layout = layouts[i] if i < len(layouts) else None
@@ -185,6 +187,17 @@ def build_output(input_path: str, output_path: str,
                     reader_orig.pages[i], Transformation())
                 wide.merge_transformed_page(
                     page, Transformation().translate(tx=w, ty=0))
+            elif mode == "updown":
+                # 上下对照：W×2H 长页，上原文下译文。页宽不变，「适合宽度」下
+                # 仍是 100%——左右对照在同样模式下只有一半，这是它存在的理由。
+                from pypdf import Transformation
+                w = float(page.mediabox.width)
+                h = float(page.mediabox.height)
+                tall = writer.add_blank_page(width=w, height=2 * h)
+                # PDF 坐标原点在**左下**、y 向上：上半 = ty h~2h，下半 = ty 0~h。
+                tall.merge_transformed_page(
+                    reader_orig.pages[i], Transformation().translate(tx=0, ty=h))
+                tall.merge_transformed_page(page, Transformation())
             else:
                 writer.add_page(page)  # 译文页（translated 模式即为唯一页）
 

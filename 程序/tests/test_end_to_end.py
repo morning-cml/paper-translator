@@ -41,6 +41,19 @@ def test_sidebyside_makes_wide_pages(sample_path, tmp_path):
         assert d.pages[0].height == pytest.approx(src.pages[0].height, abs=1)
 
 
+def test_updown_makes_tall_pages(sample_path, tmp_path):
+    """上下对照：W×2H 长页。**页宽必须与原文一致**——它存在的全部理由就是
+    在「适合宽度」下不缩水（左右对照的 2W 宽页在同样模式下只有一半大）。"""
+    out = tmp_path / "ud.pdf"
+    res = translate_pdf(sample_path, str(out),
+                        load_config(output_mode="updown"), mock=True)
+    with pdfplumber.open(sample_path) as src, pdfplumber.open(str(out)) as d:
+        assert len(d.pages) == res["pages"], "上下对照不增加页数"
+        assert d.pages[0].width == pytest.approx(src.pages[0].width, abs=1)
+        assert d.pages[0].height == pytest.approx(src.pages[0].height * 2, abs=1)
+        assert _cjk_words(d.pages[0]) > 5, "译文应在同一页上"
+
+
 def test_trial_mode_limits_translated_pages(paper_path, tmp_path):
     out = tmp_path / "trial.pdf"
     translate_pdf(paper_path, str(out), load_config(max_pages=2), mock=True)

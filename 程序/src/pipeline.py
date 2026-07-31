@@ -258,7 +258,8 @@ def output_suffix(mode: str, ext: str = ".pdf") -> str:
     if ext.lower() != ".pdf":
         return "_translation_bilingual" if mode != "translated" else "_translation"
     return {"bilingual": "_translation_bilingual",
-            "sidebyside": "_translation_sidebyside"}.get(mode, "_translation")
+            "sidebyside": "_translation_sidebyside",
+            "updown": "_translation_updown"}.get(mode, "_translation")
 
 
 _KNOWN_SERVICES = {

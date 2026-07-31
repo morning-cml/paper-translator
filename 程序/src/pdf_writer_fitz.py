@@ -17,8 +17,9 @@ BackendUnsupported，由 pipeline 整体回退 reportlab 后端。
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, NamedTuple, Optional
 
 from .layout import (collect_avoid_rects, compute_target_box, layout_block,
                      ocr_line_shape_avoids)
@@ -29,7 +30,12 @@ _ERASE_PAD_X = 0.5
 _ERASE_PAD_Y = 0.2
 _CLIP_PAD = 1.0    # 公式矢量回贴的裁剪外扩
 
-# 内置 CJK 字体（MuPDF 自带，无需外部文件；简体宋风格）
+# 内置 CJK 字体（MuPDF 自带，无需外部文件）。
+# ⚠️ 名不副实，别被 "china-ss" 骗了：`fitz.Font("china-ss")`（测宽用）拿到的是
+# **Droid Sans Fallback Regular**——单一字重、无粗体、非宋体；而 insert_text 走
+# 内置名时嵌入的又是 Song CID 字体。测宽与绘制本来就不是同一套字形，且**没有
+# 任何粗体可用**，所以标题只能靠描边合成——汉字笔画密，描粗必糊。
+# 想要真正的层级，就得往 fonts/ 放外置字体（见 fonts/生成字体.py）。
 _BUILTIN_CJK = "china-ss"
 # ASCII 专用西文字体（Base-14，比例宽度）。注意：insert_text 的内置
 # "china-ss" 实际嵌入 Song CID 字体，其 ASCII 字形是**全宽 1em**，与
@@ -99,10 +105,65 @@ def find_font_file(explicit: str = "") -> Optional[str]:
     return str(sorted(cands, key=rank)[0])
 
 
+_BOLD_NAME = re.compile(r"bold|black|heavy|semibold|demibold|[-_]b\b", re.I)
+
+
+class FontSet(NamedTuple):
+    """正文与标题各一套字面。中文排版惯例：正文宋体、标题黑体。"""
+    body_file: Optional[str]     # None = 用 MuPDF 内置
+    bold_file: Optional[str]     # None = 没有真粗体，退回描边合成
+
+    @property
+    def body_name(self) -> str:
+        return "zhBody" if self.body_file else _BUILTIN_CJK
+
+    @property
+    def bold_name(self) -> str:
+        return "zhBold" if self.bold_file else self.body_name
+
+    @property
+    def synth_bold(self) -> bool:
+        """没有真粗体字面时才描边合成——那是下策，只作兜底。"""
+        return self.bold_file is None
+
+
+def find_font_pair(explicit: str = "") -> FontSet:
+    """挑出「正文字体 + 标题粗体」两个文件。
+
+    显式指定 --font 时只覆盖正文，粗体仍从 fonts/ 里找：用户通常只想换正文
+    字体，不该因此丢掉标题层级。
+    """
+    fdir = data_file("fonts")
+    bold = None
+    if fdir.is_dir():
+        bolds = [p for p in sorted(fdir.iterdir())
+                 if p.suffix.lower() in (".ttf", ".otf") and _BOLD_NAME.search(p.name)]
+        if bolds:
+            bold = str(bolds[0])
+
+    body = find_font_file(explicit)
+    # find_font_file 不区分字重，可能正好挑中粗体文件；那样正文会整篇变粗。
+    if body and bold and Path(body).name == Path(bold).name:
+        alts = [p for p in sorted(fdir.iterdir())
+                if p.suffix.lower() in (".ttf", ".otf")
+                and not _BOLD_NAME.search(p.name)]
+        body = str(alts[0]) if alts else None
+    return FontSet(body_file=body, bold_file=bold)
+
+
 def _make_measure(fontfile: Optional[str]) -> Callable[[str, float], float]:
+    """测宽函数。**必须与绘制用的字体完全一致**，否则排版预留与实际绘制对不上，
+    轻则压字、重则整块溢出。"""
     import fitz
     try:
-        f_cjk = fitz.Font(fontfile=fontfile) if fontfile else fitz.Font(_BUILTIN_CJK)
+        if fontfile:
+            # 外置的思源/Noto 是泛 CJK 字体，**自带比例西文字形**，中西文同一
+            # 套字面即可（实测 "Abc"@10pt = 18.9pt，是比例宽而非全宽 1em）。
+            # 这样译文里的英文与中文风格一致，不再是宋体配 Helvetica 的拼接感。
+            f = fitz.Font(fontfile=fontfile)
+            return lambda t, s: f.text_length(t, fontsize=s)
+        # 内置字体：ASCII 字形是全宽 1em，与比例测宽差近一倍，必须拆开算。
+        f_cjk = fitz.Font(_BUILTIN_CJK)
         f_lat = fitz.Font(_LATIN)
 
         def measure(t: str, s: float) -> float:
@@ -112,6 +173,53 @@ def _make_measure(fontfile: Optional[str]) -> Callable[[str, float], float]:
     except Exception:  # noqa: BLE001
         # 极端兜底：按 CJK=1em / ASCII=0.5em 估宽
         return lambda t, s: sum(s * (0.5 if ord(c) < 128 else 1.0) for c in t)
+
+
+def _heading_start_sizes(layouts: List[PageLayout],
+                         measure: Callable[[str, float], float]) -> dict:
+    """让**原文字号相同的标题**在译文里也保持相同字号。
+
+    起因（实测）：`layout_block` 是每块**独立**缩字号去凑合塞进框的——译文长了
+    就 0.5pt 往下退。ACM acmart 的一级与二级标题原文都是 10.9pt，译文里却缩成了
+    10.9 和 8.9。层级看着有了，其实是随机的：**两个同级标题一样会缩成不同大小**，
+    那才是真正让人觉得"不齐整"的地方。
+
+    做法：先空跑一遍所有标题块，按原始字号分组（0.5pt 归一），取组内**众数**
+    作为该组所有标题的起始字号。**不做 H1/H2/H3 语义推断**——那需要一堆启发式
+    且容易错，而"原文一样大的，译文也一样大"既简单又忠于原排版。
+
+    ⚠️ 取众数而非最小值：最小值会被一个特别挤的标题拖垮全组。实测某篇论文的
+    35 个章节标题分布在 {10.9:6, 10.4:17, 9.9:10, 9.4:1, 8.9:1}，取最小值会把
+    全部 35 个压到 8.9，与图表题注（8.97）挤成一团，层级反而没了。众数 10.4
+    只让最大的 6 个降 4.6%（看不出来），却把主体拉齐。
+
+    空跑不带 placed（同页已放置块），得到的字号可能略大于实跑；实跑仍允许继续
+    缩，真放不下的标题因此可能再小一档。宁可如此，也不为了统一而让标题压字。
+    """
+    from collections import Counter
+
+    groups: dict = {}
+    for L in layouts:
+        for b in L.blocks:
+            if not (b.translatable and b.translation and getattr(b, "bold", False)):
+                continue
+            fdims = {f.idx: (f.width + 2.0, f.height + 2.0) for f in b.formulas}
+            box = compute_target_box(b, L.blocks, L.obstacles, L.height)
+            avoid = list(collect_avoid_rects(b, L.blocks, L.obstacles))
+            laid = layout_block(b.translation, fdims, box,
+                                min(max(b.size, 5.0), 20.0), measure,
+                                avoid=avoid, min_size=5.0,
+                                align=getattr(b, "align", "left"))
+            groups.setdefault(round(b.size * 2) / 2, []).append((id(b), laid.font_size))
+
+    forced = {}
+    for members in groups.values():
+        hist = Counter(round(s, 1) for _, s in members)
+        # 众数；并列时取较大的那个（宁大勿小，缩小是不可逆的观感损失）
+        top = max(hist.items(), key=lambda kv: (kv[1], kv[0]))[0]
+        for bid, _ in members:
+            forced[bid] = top
+    return forced
 
 
 def _redact_page(page, blocks) -> None:
@@ -145,16 +253,18 @@ def _redact_page(page, blocks) -> None:
 
 
 def _draw_page(page, layout: PageLayout, blocks, src_doc,
-               fontname: str, fontfile: Optional[str],
-               measure: Callable[[str, float], float]) -> None:
+               fonts: "FontSet",
+               measures: dict, forced_sizes: Optional[dict] = None) -> None:
     import fitz
-    try:
-        if fontfile:
-            page.insert_font(fontname=fontname, fontfile=fontfile)
-        else:
-            page.insert_font(fontname=fontname)  # fontname 为内置保留名
-    except Exception:  # noqa: BLE001
-        pass  # insert_text 时仍可用内置名自动加载
+    for fname, ffile in ((fonts.body_name, fonts.body_file),
+                         (fonts.bold_name, fonts.bold_file)):
+        try:
+            if ffile:
+                page.insert_font(fontname=fname, fontfile=ffile)
+            else:
+                page.insert_font(fontname=fname)  # fontname 为内置保留名
+        except Exception:  # noqa: BLE001
+            pass  # insert_text 时仍可用内置名自动加载
 
     placed: List[tuple] = []   # 本页已放置译文/公式的矩形，后续块逐行避让
     for b in blocks:
@@ -164,33 +274,51 @@ def _draw_page(page, layout: PageLayout, blocks, src_doc,
                 r = fitz.Rect(x0 - 1.0, top - 0.6, x1 + 1.0, bottom + 0.6)
                 if not r.is_empty and r.is_valid:
                     page.draw_rect(r, color=None, fill=(1, 1, 1))
+        is_bold = bool(getattr(b, "bold", False))
+        # 真粗体字面优先；没有才退回描边合成。测宽必须跟着换，否则排版按
+        # 正文宽度预留、实际用更宽的粗体绘制，标题会压到下一行。
+        use_bold_face = is_bold and fonts.bold_file is not None
+        fontname = fonts.bold_name if use_bold_face else fonts.body_name
+        measure = measures[use_bold_face]
+        active_file = fonts.bold_file if use_bold_face else fonts.body_file
         fdims = {f.idx: (f.width + 2.0, f.height + 2.0) for f in b.formulas}
         box = compute_target_box(b, layout.blocks, layout.obstacles, layout.height)
         avoid = list(collect_avoid_rects(b, layout.blocks, layout.obstacles))
         if getattr(b, "from_ocr", False):
             avoid += ocr_line_shape_avoids(b, box)
         start_size = min(max(b.size, 5.0), 20.0)
+        # 标题：改用「同原始字号组」统一的起始字号，见 _heading_start_sizes
+        if forced_sizes:
+            start_size = forced_sizes.get(id(b), start_size)
         # 表格单元格空间紧、不可越格，允许缩得更小以塞进本格
         min_size = 4.0 if getattr(b, "cell_rect", None) else 5.0
         laid = layout_block(b.translation or "", fdims, box, start_size,
-                            measure, avoid=avoid + placed, min_size=min_size)
+                            measure, avoid=avoid + placed, min_size=min_size,
+                            align=getattr(b, "align", "left"))
         placed.extend((it.x, it.y_top, it.x + it.w, it.y_top + it.h)
                       for it in laid.items)
         color = tuple(getattr(b, "color", (0, 0, 0)) or (0, 0, 0))
-        # 粗体块（章节标题）：render_mode=2（填充+描边）合成加粗，描边同色、
-        # 线宽取字号的 4.5%（实测 9~10pt 标题清晰有力且不糊）。
+        # 描边合成加粗**只在没有真粗体字面时**才用：汉字笔画本就密，把笔画描
+        # 粗会糊成一团，真黑体是重新设计的笔形而不是把宋体加粗。
         bold_kw = (dict(render_mode=2, fill=color, border_width=0.045)
-                   if getattr(b, "bold", False) else {})
+                   if (is_bold and not use_bold_face) else {})
         frects = {f.idx: (f.x0, f.top, f.x1, f.bottom) for f in b.formulas}
         for it in laid.items:
             if it.kind == "text":
                 baseline = it.y_top + 0.5 * (it.h - it.size) + _ASCENT * it.size
-                x = it.x
-                for is_a, seg in _script_runs(it.text):
-                    page.insert_text((x, baseline), seg,
-                                     fontname=_LATIN if is_a else fontname,
+                if active_file:
+                    # 外置字体自带比例西文字形，中西文同一套字面，整串一次画完。
+                    page.insert_text((it.x, baseline), it.text, fontname=fontname,
                                      fontsize=it.size, color=color, **bold_kw)
-                    x += measure(seg, it.size)
+                else:
+                    # 内置字体的 ASCII 是全宽 1em，必须换西文字体单独画，
+                    # 否则绘制宽度约为排版预留的两倍，直接压字/溢出。
+                    x = it.x
+                    for is_a, seg in _script_runs(it.text):
+                        page.insert_text((x, baseline), seg,
+                                         fontname=_LATIN if is_a else fontname,
+                                         fontsize=it.size, color=color, **bold_kw)
+                        x += measure(seg, it.size)
             else:
                 r = frects.get(it.fidx)
                 if r is None:
@@ -222,9 +350,15 @@ def build_output(input_path: str, output_path: str,
                     f"第 {page.number + 1} 页含旋转（rotation="
                     f"{page.rotation}），PyMuPDF 精确路径暂不支持")
 
-        fontfile = find_font_file(font_path)
-        fontname = "zhCJK" if fontfile else _BUILTIN_CJK
-        measure = _make_measure(fontfile)
+        fonts = find_font_pair(font_path)
+        # 两套测宽：正文一套、标题粗体一套。粗体字面的西文比正文宽，
+        # 共用一套测宽会让标题排版失准。
+        measures = {
+            False: _make_measure(fonts.body_file),
+            True: _make_measure(fonts.bold_file or fonts.body_file),
+        }
+        forced_sizes = _heading_start_sizes(layouts,
+                                            measures[fonts.bold_file is not None])
 
         for layout in layouts:
             if layout.page_index >= len(doc):
@@ -234,13 +368,30 @@ def build_output(input_path: str, output_path: str,
             if not blocks:
                 continue
             _redact_page(page, blocks)
-            _draw_page(page, layout, blocks, src, fontname, fontfile, measure)
+            _draw_page(page, layout, blocks, src, fonts, measures, forced_sizes)
 
         if mode == "bilingual":
             out = fitz.open()
             for i in range(len(doc)):
                 out.insert_pdf(src, from_page=i, to_page=i)   # 原文页
                 out.insert_pdf(doc, from_page=i, to_page=i)   # 译文页
+            _subset_fonts(out)
+            out.save(output_path, garbage=3, deflate=True)
+            out.close()
+        elif mode == "updown":
+            # 上下对照：W×2H 长页，上原文下译文。
+            # 存在的理由是**可读性**：左右对照是 2W 宽页，在「适合宽度」下只能
+            # 缩到单页的一半（实测 1.47× vs 2.94×），字小到看不清，而这是它的
+            # 物理上限、调不动。上下拼保持页宽不变，适合宽度下就是 100%。
+            out = fitz.open()
+            for i in range(len(doc)):
+                r = src[i].rect
+                w, h = r.width, r.height
+                page = out.new_page(width=w, height=2 * h)
+                page.show_pdf_page(fitz.Rect(0, 0, w, h), src, i)          # 上：原文
+                page.show_pdf_page(fitz.Rect(0, h, w, 2 * h), doc, i)      # 下：译文
+                page.draw_line(fitz.Point(0, h), fitz.Point(w, h),
+                               color=(0.8, 0.8, 0.8), width=0.7)
             _subset_fonts(out)
             out.save(output_path, garbage=3, deflate=True)
             out.close()

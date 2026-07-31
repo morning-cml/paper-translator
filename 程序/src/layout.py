@@ -33,6 +33,10 @@ _NO_LINE_END = set("（【《〈「『“‘([{<")
 
 Rect = Tuple[float, float, float, float]  # (x0, top, x1, bottom)
 
+# 一行文字自身占的高度（相对字号）：汉字字面约 1em，留一点给下伸部与舍入。
+# 只用于「框底之下还放不放得下一行」的判断，不影响行与行的实际间距。
+_INK_H = 1.12
+
 
 @dataclass
 class Item:
@@ -144,7 +148,8 @@ def _skip_band_bottom(x0: float, x1: float, y: float, lh: float,
 
 def _flow(units, formulas: Dict[int, Tuple[float, float]], size: float,
           leading: float, box: Rect, avoid: Sequence[Rect],
-          measure: Callable[[str, float], float], hard_bottom: bool):
+          measure: Callable[[str, float], float], hard_bottom: bool,
+          align: str = "left"):
     """把 units 排进 box（可避障）。返回 (items, end_y, done)。
     hard_bottom=True 时超出 box 底则停止（done=False 表示还有剩余）。"""
     x0, top, x1, bottom_max = box
@@ -164,7 +169,16 @@ def _flow(units, formulas: Dict[int, Tuple[float, float]], size: float,
         guard += 1
         if guard > 10000:  # 防御：任何异常几何都不允许死循环
             break
-        if hard_bottom and y + leading > bottom_max + 0.6:
+        # 竖向能否再放一行：按**这一行自己的墨迹高**判断，而不是整个 leading。
+        #
+        # leading（1.30×字号）是**行与行之间**的距离；框底之下没有下一行了，
+        # 那份行间距根本不会被占用。拿它当判据，等于凭空多要 30% 的高度。
+        # 后果实测过：原文一个 10.9pt 的单行标题，墨迹高 11.1pt，译文却因为
+        # 「10.9 × 1.30 = 14.2 > 11.1」被判放不下，一路缩到 9.0pt 才过关——
+        # **每个单行块都被系统性地缩掉约 20%**，与内容长短无关（那些标题的
+        # 译文只有 21.8pt 宽，框却有 100~240pt，宽度从来不是瓶颈）。
+        # 章节标题、图表题注、表格短标签全中招，整篇的字号层级因此被压平。
+        if hard_bottom and y + size * _INK_H > bottom_max + 0.6:
             return items, y, False
         lx0, lx1 = _line_interval(x0, x1, y, leading, avoid)
         if lx1 - lx0 < min_w:
@@ -213,12 +227,15 @@ def _flow(units, formulas: Dict[int, Tuple[float, float]], size: float,
         # 把行尾剩余宽度均摊到单元间距（每处上限 0.30×字号，防止过疏）。
         # 段末行保持左对齐——与原文排版惯例一致。
         just = 0.0
-        if i < n and len(line) >= 3:
+        # 居中块不参与两端对齐：两者互斥，同时开会把居中撑成满行。
+        if align == "left" and i < n and len(line) >= 3:
             room = (lx1 - lx0) - wsum
             if 0.0 < room <= 0.30 * size * (len(line) - 1) \
                     and wsum > 0.82 * (lx1 - lx0):
                 just = room / (len(line) - 1)
         x = lx0
+        if align == "center":
+            x = lx0 + max(0.0, (lx1 - lx0) - wsum) / 2.0
         for k_idx, (kind, payload, w) in enumerate(line):
             if kind == "ph":
                 fw, fh = formulas.get(payload, (0.0, 0.0))
@@ -244,13 +261,15 @@ def layout_block(
     avoid: Sequence[Rect] = (),
     leading_ratio: float = 1.30,
     min_size: float = 5.0,
+    align: str = "left",
 ) -> LaidBlock:
     units = _tokenize(text)
     size = max(start_size, min_size)
     while True:
         leading = size * leading_ratio
         items, end_y, done = _flow(units, formulas, size, leading, box,
-                                   avoid, measure, hard_bottom=True)
+                                   avoid, measure, hard_bottom=True,
+                                   align=align)
         if done or size <= min_size:
             break
         size = round(size - 0.5, 2)
@@ -258,7 +277,8 @@ def layout_block(
     if not done:
         # 最小字号仍放不下：继续向下溢出排完（宁可溢出，不丢内容）
         items, end_y, _ = _flow(units, formulas, size, size * leading_ratio,
-                                box, avoid, measure, hard_bottom=False)
+                                box, avoid, measure, hard_bottom=False,
+                                align=align)
 
     laid = LaidBlock(items=_merge_text_items(items), font_size=size,
                      leading=size * leading_ratio,
@@ -307,7 +327,15 @@ def compute_target_box(block, page_blocks, obstacles,
         n_lines = max(len(getattr(block, "line_rects", None) or ()), 1)
         line_h = block.height / n_lines
         limit = min(limit, block.bottom + 2.5 * line_h)
-    return (block.x0, block.top, block.x1, max(limit, block.bottom))
+    x0, x1 = block.x0, block.x1
+    if getattr(block, "align", "left") == "center":
+        # 居中必须相对**栏**来算。沿用原文墨迹框的话，译文只是在「原文本身
+        # 那么宽」的范围里居中——原文多宽它就多宽，等于没居中，标题照样左偏。
+        cx0 = getattr(block, "col_x0", 0.0)
+        cx1 = getattr(block, "col_x1", 0.0)
+        if cx1 - cx0 > x1 - x0:
+            x0, x1 = cx0, cx1
+    return (x0, block.top, x1, max(limit, block.bottom))
 
 
 def collect_avoid_rects(block, page_blocks, obstacles) -> List[Rect]:

@@ -64,6 +64,10 @@ DeepSeek，也可用本地免费模型）。</p>
     <td>打印对照。原文页与译文页交替出现。</td></tr>
 <tr><td>双语·左右对照</td><td><code>原名_translation_sidebyside.pdf</code></td>
     <td>屏幕上核对原文。每页变成宽页：左半原文、右半译文，逐页对齐。</td></tr>
+<tr><td>双语·上下对照</td><td><code>原名_translation_updown.pdf</code></td>
+    <td><b>屏幕上字最大</b>。每页变成长页：上半原文、下半译文。页面宽度不变，
+    所以按「适合宽度」看时字是满尺寸的——左右对照的宽页在同样设置下只有一半大，
+    这就是嫌字小时该换的模式。</td></tr>
 </table>
 <div class="tip"><b>Word 文档</b>（.docx）同样支持：标题层级、项目符号、表格、
 页眉页脚、图片位置全部保留。"纯中文"直接替换原文；两种"双语"模式都会
@@ -168,6 +172,7 @@ console.volcengine.com/ark 申请，模型需先在控制台开通）、<b>OpenA
 <tr><td>翻译整篇</td><td><code>py translate_cli.py "论文.pdf"</code></td></tr>
 <tr><td>试译前 3 页</td><td><code>py translate_cli.py "论文.pdf" --pages 3</code></td></tr>
 <tr><td>左右对照版</td><td><code>py translate_cli.py "论文.pdf" --mode sidebyside</code></td></tr>
+<tr><td>上下对照版</td><td><code>py translate_cli.py "论文.pdf" --mode updown</code></td></tr>
 <tr><td>指定学科</td><td><code>py translate_cli.py "论文.pdf" --domain 生物医学</code></td></tr>
 <tr><td>不花钱检查排版</td><td><code>py translate_cli.py "论文.pdf" --mock</code></td></tr>
 <tr><td>回填后端自测</td><td>双击 <span class="path">程序\自测-PyMuPDF.bat</span></td></tr>

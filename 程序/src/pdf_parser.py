@@ -67,6 +67,13 @@ class Block:
     bold: bool = False       # 粗体块（章节标题等）：写回时合成加粗，保留原色
     # 表格单元格块：译文严格限制在本单元格内（不得向下扩展串行到下一行）
     cell_rect: Optional[Rect] = None
+    # 水平对齐："left" | "center" | "right"。从几何反推（见 _mark_alignment）。
+    # 排版引擎原先只有左对齐一种模式，居中标题因此在译文变短后整体左偏。
+    align: str = "left"
+    # 所属栏的左右边界。居中/右对齐必须相对**栏**而不是原文墨迹框来算，
+    # 否则「在原文自己的宽度里居中」等于没做。
+    col_x0: float = 0.0
+    col_x1: float = 0.0
 
     @property
     def in_table(self) -> bool:
@@ -107,13 +114,41 @@ def _word_size(w) -> float:
     return float(w["bottom"] - w["top"])
 
 
-_BOLD_FONT = re.compile(r"bold|black|heavy|semibold|-b\b|-bd\b", re.IGNORECASE)
+# 「这个字体是粗体吗」——只能从字体名猜，PDF 里没有字重字段。
+# 大小写不敏感的常见命名。注意 TeX 系的 Medium 就是正文粗体（NimbusRomNo9L-Medi）。
+_BOLD_FONT = re.compile(
+    r"bold|black|heavy|semib|demib|ultrab|"
+    r"cmbx|"            # Computer Modern Bold Extended（TeX 默认粗体）
+    r"bx\d|"            # SFBX1200 一类 TeX 命名
+    r"[-,_]bd?\b|"      # Foo-B / Foo-Bd
+    r"[-,_]medi",
+    re.IGNORECASE)
+
+# TeX / Linux Libertine 系的后缀约定：T=Text、B=Bold、I=Italic。
+# 故 LinLibertineTB / LinBiolinumTB(I) 是粗体，而 …T（正常）、…TI（斜体）不是。
+# **必须大小写敏感**：小写的 "tb" 在普通字体名里可能只是巧合（如 Whitby）。
+_BOLD_SUFFIX = re.compile(r"TBI?$")
+
+# 章节编号开头："3 "、"3.2 "、"3.2.1 "、"IV. "、"A. "。
+# 仅用于在**连续的粗体行**之间断块：有些模板（如 ACM acmart）的一级与二级
+# 标题**字号完全相同**（都 10.9pt），只差编号深度与大小写，靠字号永远分不开，
+# 会把"2 相关工作"和"2.1 HCI 研究"并成一块、当作一个标题翻译。
+# 每级限 1~2 位数字：真实章节号不会是 "2020"（年份）或 "3.14159"（小数），
+# 而这两种恰恰是正文里最常见的数字开头，不收紧就会误断块。
+_HEADING_NUM = re.compile(
+    r"^\s*(?:\d{1,2}(?:\.\d{1,2})*|[IVXLC]{1,5}\.|[A-Z]\.)\s+\S")
 
 
 def _word_bold(w) -> bool:
-    """按字体名判断加粗（子集前缀 ABCDEF+ 已剥离）。"""
+    """按字体名判断加粗（子集前缀 ABCDEF+ 已剥离）。
+
+    ⚠️ 这里放宽过一次，起因是真实样本：ACM acmart 模板（CHI/CSCW/UIST 等
+    全用它）的粗体叫 `LinLibertineTB`，旧正则 `bold|black|heavy|-b\\b` 一个都
+    不匹配 → 全文**零个粗体块** → 章节标题不与正文断开，被当成正文一起翻译，
+    输出里整页只剩一个字号，标题层级彻底消失。字体名是唯一线索，宁可多认一些。
+    """
     fn = (w.get("fontname") or "").split("+")[-1]
-    return bool(_BOLD_FONT.search(fn))
+    return bool(_BOLD_FONT.search(fn) or _BOLD_SUFFIX.search(fn))
 
 
 def _color_differs(a, b, tol: float = 0.2) -> bool:
@@ -428,8 +463,18 @@ def _group_blocks(lines, page_index, from_ocr: bool = False) -> List[Block]:
         gap = ln["top"] - prev["bottom"]
         # OCR 的"字号"来自识别框高、天然抖动，突变阈值放宽以免误断段（T7）
         size_jump_ratio = 0.45 if from_ocr else 0.25
+        # 相邻两行**都是粗体** = 多半是紧挨着的两级标题（"2 相关工作" 紧跟
+        # "2.1 HCI 研究"）。它们的字号差是排版刻意定的，但常常只有 10%~20%，
+        # 够不着 0.25 的通用阈值，结果两级标题并成一块、层级丢失。标题行短、
+        # 字号是有意为之，这里用更敏感的阈值；正文不受影响。
+        both_bold = bool(prev.get("bold") and ln.get("bold"))
+        if both_bold:
+            size_jump_ratio = 0.10
         size_change = (abs(ln["size"] - prev["size"])
                        / max(prev["size"], 1.0) > size_jump_ratio)
+        # 同字号的相邻两级标题：靠「本行另起一个章节编号」断开。只在两行都
+        # 粗体时启用——正文里以数字开头的行（列表项、"2020 年…"）不受影响。
+        new_heading = both_bold and bool(_HEADING_NUM.match(ln.get("text", "")))
         # 行距阈值按行高缩放：大字号标题行距天然更大，不应被拆成多块。
         # 只取相邻两行行高的**较小者**参与放宽——单个超高行带（如带上下标
         # 的作者行）不应把它与后续正文之间的真实段间隙也吞并。
@@ -446,7 +491,7 @@ def _group_blocks(lines, page_index, from_ocr: bool = False) -> List[Block]:
         emphasis_change = (not from_ocr) and (
             prev.get("bold", False) != ln.get("bold", False)
             or _color_differs(prev.get("color"), ln.get("color")))
-        if gap > gap_limit or size_change or emphasis_change:
+        if gap > gap_limit or size_change or emphasis_change or new_heading:
             blocks.append(_make_block(cur, page_index, from_ocr))
             cur = [ln]
         else:
@@ -764,7 +809,79 @@ def _parse_page(page, page_index, ocr=None) -> PageLayout:
         for grp in (full, left, right):
             layout.blocks.extend(_group_blocks(grp, page_index, from_ocr))
     layout.blocks.extend(cell_blocks)
+    _mark_alignment(layout, split_x)
     return layout
+
+
+def _mark_alignment(layout: "PageLayout", split_x: Optional[float]) -> None:
+    """从几何反推每块的水平对齐，并记下所属栏的左右边界。
+
+    为什么需要：排版引擎原先只有「从框左边开始排」一种模式。居中标题的框
+    就是它自己的墨迹范围，中文译文比英文短约三分之一，于是每个居中标题都
+    向左偏 (原文宽 − 译文宽)/2——偏移同向且固定，整篇看下来就是"歪的"。
+
+    **只判居中，不判右对齐**：右对齐在论文里极罕见，而它的几何特征（左间隙
+    大、右间隙小）与「首行缩进的两端对齐段落」几乎一样，误判会把正常段落
+    整段推到右边。宁可漏，不可错。
+    """
+    blocks = [b for b in layout.blocks if not b.in_table]
+    if not blocks:
+        return
+
+    # 分组：跨中缝的整幅块自成一组，其余按中心点归左/右栏。
+    if split_x is None:
+        groups = [blocks]
+    else:
+        full = [b for b in blocks if b.x0 < split_x < b.x1]
+        left = [b for b in blocks
+                if b not in full and (b.x0 + b.x1) / 2 < split_x]
+        right = [b for b in blocks if b not in full and b not in left]
+        groups = [g for g in (full, left, right) if g]
+
+    for grp in groups:
+        # 栏边界取**多行正文块**的极值：学术排版里正文是两端对齐的，
+        # 它的左右边就是栏边。标题/公式/页眉都短，拿它们定边会偏。
+        body = [b for b in grp
+                if b.translatable and not b.bold and len(b.line_rects) >= 2]
+        ref = body if len(body) >= 2 else grp
+        L = min(b.x0 for b in ref)
+        R = max(b.x1 for b in ref)
+        if R - L < 40.0:            # 栏太窄，几何不可靠，全部按左对齐
+            for b in grp:
+                b.col_x0, b.col_x1 = L, R
+            continue
+        tol = max(2.0, 0.02 * (R - L))
+
+        for b in grp:
+            b.col_x0, b.col_x1 = L, R
+            lines = b.line_rects
+            if 2 <= len(lines) <= 3:
+                # 多行块自带证据，**不看左右间隙**：块的包围盒是各行的并集，
+                # 最长那行往往接近满栏，间隙因此接近 0——用间隙判会把居中的
+                # 多行大标题整个漏掉（实测 ACM acmart 标题左隙仅 5.1pt）。
+                #
+                # 判别式：**左右两侧的参差量必须相当**。居中块左边缩进多少、
+                # 右边就缩进多少（都等于行宽差的一半）；而
+                #   · 悬挂缩进的编号列表 → 只有左边变，右边被两端对齐拉齐；
+                #   · 左对齐的多行标题   → 只有右边变，左边全部对齐；
+                #   · 引用块 \begin{quote} → 两边都不变（整体缩进而已）。
+                # 只看「中点重合 + 起点分散」会把前两者一并误判（实测确实误判了）。
+                #
+                # 行数上限 3：论文里 4 行以上的居中块几乎不存在，那是段落。
+                # 作者块（acmart 里每位作者的姓名/单位确实居中）也因此被排除
+                # ——它有自己的窄框，按整栏宽居中会撑破作者网格，宁可不动。
+                mids = [(x0 + x1) / 2 for x0, _, x1, _ in lines]
+                l_spread = max(x0 for x0, _, _, _ in lines) - min(x0 for x0, _, _, _ in lines)
+                r_spread = max(x1 for _, _, x1, _ in lines) - min(x1 for _, _, x1, _ in lines)
+                if (max(mids) - min(mids) <= tol
+                        and l_spread > tol and r_spread > tol
+                        and abs(l_spread - r_spread) <= tol):
+                    b.align = "center"
+            elif len(lines) <= 1:
+                # 单行块没有行间证据可用，只能看它在栏里是否左右等距。
+                gap_l, gap_r = b.x0 - L, R - b.x1
+                if gap_l > tol and gap_r > tol and abs(gap_l - gap_r) <= tol:
+                    b.align = "center"
 
 
 def _promote_full_tails(full: list, side: list) -> None:

@@ -23,8 +23,11 @@ def main() -> int:
     ap.add_argument("input",
                     help="输入文件路径（.pdf .docx .md .txt .srt）")
     ap.add_argument("-o", "--output", help="输出 PDF 路径（默认 <输入名>_zh.pdf）")
-    ap.add_argument("--mode", choices=["translated", "bilingual", "sidebyside"],
-                    help="translated=纯译文；bilingual=双语·前后页；sidebyside=双语·左右对照宽页")
+    ap.add_argument("--mode",
+                    choices=["translated", "bilingual", "sidebyside", "updown"],
+                    help="translated=纯译文；bilingual=双语·前后页；"
+                         "sidebyside=双语·左右对照宽页；updown=双语·上下对照长页"
+                         "（页宽不变，屏幕上看字最大）")
     ap.add_argument("--model", help="DeepSeek 模型（如 deepseek-v4-flash / deepseek-v4-pro）")
     ap.add_argument("--api-key", dest="api_key", help="DeepSeek API Key")
     ap.add_argument("--glossary", help="术语库 CSV 路径")

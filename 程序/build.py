@@ -86,6 +86,10 @@ DATA_ITEMS = [
     ("web", "web"),
     ("glossary", "glossary"),
     ("config.example.json", "."),
+    # 中文字体（思源宋体正文 + 思源黑体粗标题）。**必须进包**：缺了它就退回
+    # MuPDF 内置字体——单一字重、无粗体，标题只能描边合成，层级当场消失。
+    # 由 fonts/生成字体.py 从 Noto CJK 可变字体烘焙，SIL OFL，可随 AGPL 分发。
+    ("fonts", "fonts"),
 ]
 # 放在用户可见目录（不进 exe，便于查看/编辑）
 DOC_ITEMS = [
