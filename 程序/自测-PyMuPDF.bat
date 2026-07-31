@@ -10,7 +10,7 @@ if not defined PY (
   where python >nul 2>nul && set "PY=python"
 )
 if not defined PY (
-  echo    [x] 没有检测到 Python，请先运行 启动PDF翻译.bat 完成安装。
+  echo    [x] 没有检测到 Python，请先运行 启动论文翻译.bat 完成安装。
   pause
   exit /b 1
 )

@@ -15,8 +15,8 @@
       RELEASES.md              ← 台账（人读），由 releases.json 渲染
       releases.json            ← 台账数据源，只增不减，纳入 git
       v1.0.0-full/
-        PDF翻译工具/          ← 给用户的整个文件夹（内含 exe）
-        PDF翻译工具-v1.0.0-full.zip
+        论文翻译工具/          ← 给用户的整个文件夹（内含 exe）
+        paper-translator-v1.0.0-full.zip
         SHA256SUMS.txt         ← 完整性校验
         build_info.json        ← 版本/提交/时间/profile
       v1.0.0-lite/…
@@ -65,9 +65,10 @@ from src.version import (APP_NAME, APP_NAME_EN, COPYRIGHT,  # noqa: E402
                          HOMEPAGE, PUBLISHER, __version__)
 
 # zip 文件名必须纯 ASCII：GitHub Releases 上传时会把非 ASCII 字符剥掉，
-# "PDF翻译工具-v1.0.1-full.zip" 到了发布页会变成 "PDF.-v1.0.1-full.zip"，
-# 看着像坏文件。包内的文件夹仍叫中文名（zip 条目是 UTF-8，不受影响）。
-ZIP_SLUG = APP_NAME_EN.lower().replace(" ", "-")     # → pdf-translator
+# "论文翻译工具-v1.2.0-full.zip" 到了发布页会剩下 "-v1.2.0-full.zip"，
+# 看着像坏文件（v1.0.1 真踩过这个坑）。所以走英文名派生的 ASCII slug；
+# 包内的文件夹仍叫中文名（zip 条目是 UTF-8，不受影响）。
+ZIP_SLUG = APP_NAME_EN.lower().replace(" ", "-")     # → paper-translator
 
 BUILD_DIR = ROOT / "build"
 RELEASE_DIR = ROOT / "release"
@@ -329,7 +330,7 @@ def build(profile: str, do_zip: bool, sign_cmd: str | None,
     if verfile:
         cmd += ["--version-file", str(verfile)]
     if IS_MAC:
-        cmd += ["--osx-bundle-identifier", "com.morning-cml.pdf-translator"]
+        cmd += ["--osx-bundle-identifier", "com.morning-cml.paper-translator"]
     if icon:
         cmd += ["--icon", str(icon)]
     for src, dst in DATA_ITEMS:
@@ -703,7 +704,10 @@ def main() -> int:
     out = build(args.profile, args.zip, args.sign, args.obfuscate,
                 args.overwrite, args.keep_old)
     size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
-    print(f"\n构建完成 ✔  {out.relative_to(ROOT)}  共 {size / 1048576:.1f} MB")
+    # 这里不要用 ✔ 之类的非 ASCII 符号：Windows 控制台默认 GBK(cp936) 没有对应
+    # 码位，会在**构建已经成功之后**抛 UnicodeEncodeError，脚本以 1 退出，看起来
+    # 像构建失败（CI 设了 PYTHONUTF8=1 才碰不到，本地必踩）。
+    print(f"\n构建完成 [OK]  {out.relative_to(ROOT)}  共 {size / 1048576:.1f} MB")
     print(f"给用户的文件夹：{(out / APP_NAME).relative_to(ROOT)}")
     return 0
 

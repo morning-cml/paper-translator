@@ -114,7 +114,7 @@ jobs:
 
             本工具未购买苹果的开发者认证，**第一次打开一定会被系统拦下**——会提示
             「无法验证开发者」或「已损坏，无法打开」。这是正常现象，不是软件有问题。
-            按 [《Mac 使用说明》](https://github.com/morning-cml/pdf-translator/blob/main/程序/docs/Mac使用说明.md)
+            按 [《Mac 使用说明》](https://github.com/morning-cml/paper-translator/blob/main/程序/docs/Mac使用说明.md)
             放行**一次**即可（约 2 分钟），之后就能像普通软件一样直接双击。
             ⚠️ **别点「移到废纸篓」。**
 

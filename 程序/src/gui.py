@@ -76,7 +76,7 @@ class App:
         self.outputs: list[str] = []
         cfg = load_config()
 
-        root.title("PDF 论文翻译 · 英译中")
+        root.title("论文翻译工具 · 经典界面（仅英译中）")
         root.minsize(720, 760)
         try:
             ttk.Style().theme_use("clam")
@@ -90,7 +90,7 @@ class App:
         # 顶部标题
         head = ttk.Frame(outer)
         head.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        ttk.Label(head, text="PDF 论文翻译 · 英译中",
+        ttk.Label(head, text="论文翻译工具 · 经典界面（仅英译中）",
                   font=("Microsoft YaHei UI", 15, "bold")).pack(anchor="w")
         ttk.Label(head, text="基于 DeepSeek · 保留图片 / 公式 / 排版 · 术语库增强",
                   foreground="#666").pack(anchor="w")

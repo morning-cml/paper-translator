@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>PDF 论文翻译工具 · 使用说明</title>
+<title>论文翻译工具 · 使用说明</title>
 <style>
   body { font-family: "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
          max-width: 880px; margin: 24px auto 80px; padding: 0 20px;
@@ -30,15 +30,16 @@
 </head>
 <body>
 
-<h1>PDF 论文翻译工具 · 使用说明</h1>
-<p>把<b>英文文档</b>翻译成<b>中文</b>。支持 <b>PDF</b>、<b>Word（.docx）</b>、
+<h1>论文翻译工具 · 使用说明</h1>
+<p>把文档翻译成<b>另一种语言</b>——源语言 <b>11 种</b>（含自动检测）、目标语言
+<b>10 种</b>（中 / 英 / 日 / 韩 / 德 / 法 / 西 / 俄 / 葡 / 意）。支持 <b>PDF</b>、<b>Word（.docx）</b>、
 <b>PowerPoint（.pptx）</b>、<b>Markdown</b>、<b>纯文本</b>、<b>SRT 字幕</b>：图片、公式、表格、排版原样
 保留，译文出现在原文对应的位置；参考文献按学术惯例保持原样，代码块与链接
 地址绝不会被改动。支持扫描版 PDF（自动 OCR）。翻译由大模型完成（默认
 DeepSeek，也可用本地免费模型）。</p>
 
 <h2>一、第一次使用（只需三步）</h2>
-<div class="step"><b class="n">第 1 步</b>双击 <span class="path">启动PDF翻译.bat</span>。
+<div class="step"><b class="n">第 1 步</b>双击 <span class="path">启动论文翻译.bat</span>。
 首次会自动安装所需组件（需联网，几分钟），随后<b>自动弹出程序窗口</b>，
 关掉窗口即退出。
 <br><span class="muted">（若你的电脑缺少窗口组件，会改用浏览器打开界面，
@@ -150,7 +151,7 @@ console.volcengine.com/ark 申请，模型需先在控制台开通）、<b>OpenA
 <h2>七、文件夹里都是什么？哪些能删？</h2>
 <table>
 <tr><th>位置</th><th>是什么</th><th>能删吗</th></tr>
-<tr><td><span class="path">启动PDF翻译.bat</span></td><td>唯一入口，双击启动</td><td><b>别删</b></td></tr>
+<tr><td><span class="path">启动论文翻译.bat</span></td><td>唯一入口，双击启动</td><td><b>别删</b></td></tr>
 <tr><td><span class="path">使用说明.html</span></td><td>本说明</td><td>可删</td></tr>
 <tr><td><span class="path">程序\</span></td><td>程序本体（代码、配置、术语库、模型）</td><td><b>别删、别改名</b></td></tr>
 <tr><td><span class="path">程序\config.json</span></td><td>你的设置（含 API Key，勿外传）</td><td>删了要重填设置</td></tr>

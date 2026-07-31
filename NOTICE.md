@@ -2,7 +2,7 @@
 
 ## 本项目
 
-**PDF / Word 文档翻译工具**
+**论文翻译工具（Paper Translator）**
 Copyright (C) 2026 morning-cml
 
 本程序是自由软件：你可以依据自由软件基金会发布的 **GNU Affero 通用公共许可证

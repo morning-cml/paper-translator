@@ -4,9 +4,9 @@
 遵循语义化版本：主版本.次版本.修订号。
 """
 
-__version__ = "1.1.0"
-APP_NAME = "PDF翻译工具"
-APP_NAME_EN = "PDF Translator"
+__version__ = "1.2.0"
+APP_NAME = "论文翻译工具"
+APP_NAME_EN = "Paper Translator"
 PUBLISHER = "morning-cml"
 COPYRIGHT = "Copyright (C) 2026 morning-cml. Licensed under AGPL-3.0."
-HOMEPAGE = "https://github.com/morning-cml/pdf-translator"
+HOMEPAGE = "https://github.com/morning-cml/paper-translator"

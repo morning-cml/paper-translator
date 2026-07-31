@@ -6,7 +6,7 @@
 
 > **注意本文件只记录本机构建**。正式对外发布的版本由 GitHub Actions 在
 > 干净环境构建并挂在
-> [Releases](https://github.com/morning-cml/pdf-translator/releases) —— 那里才是分发给用户的权威列表，
+> [Releases](https://github.com/morning-cml/paper-translator/releases) —— 那里才是分发给用户的权威列表，
 > 发布流程是推送 `v*.*.*` tag 自动触发。本地构建多为开发验证用。
 
 > **留记录，不留字节**：本地只保留每个 profile 的最新一次构建，更早的

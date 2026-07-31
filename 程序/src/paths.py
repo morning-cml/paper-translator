@@ -11,7 +11,7 @@
   - 源码运行 → `程序/`（保持现状，开发时一切在眼前）
   - 打包运行 → exe 同级的 `data/`（便携优先）；若该处不可写（如装在
     Program Files、或 macOS 的 .app 包内），退回各平台用户目录下的
-    `PDF翻译工具/`（Win=%APPDATA%、mac=~/Library/Application Support、
+    `论文翻译工具/`（Win=%APPDATA%、mac=~/Library/Application Support、
     Linux=~/.local/share）
 
 **关键**：用户数据绝不能放进 `_MEIPASS`——那是临时目录，程序一退出就被删，
@@ -24,7 +24,11 @@ import os
 import sys
 from pathlib import Path
 
-APP_NAME = "PDF翻译工具"
+# 数据目录名。**故意不从 version.py 导入**：那个是随时可改的「产品名」，
+# 这个是老用户硬盘上已经存在的目录名——两者绑死的话，将来再改一次名就会
+# 又一次悄悄丢掉所有人的 Key 和缓存。改这里必须同时加一条迁移（见下）。
+APP_NAME = "论文翻译工具"
+_LEGACY_APP_NAMES = ("PDF翻译工具",)   # v1.1.0 及更早
 
 
 def is_frozen() -> bool:
@@ -49,6 +53,32 @@ def _writable(p: Path) -> bool:
         return False
 
 
+def _adopt_legacy_dir(base: Path) -> Path:
+    """程序改名后的一次性目录迁移（PDF翻译工具 → 论文翻译工具，2026-07-30）。
+
+    老用户的 `config.json`（含 API Key）和 `cache/translations.json` 都躺在旧名
+    目录里。不搬 = Key 要重填、**翻译缓存全部作废**——而缓存是真花过钱的，
+    README 承诺的"同文档重跑几乎零成本"就是靠它。
+
+    同盘 rename 是原子操作、不复制字节，几百 MB 的缓存也是瞬间完成。
+    失败（无权限 / 目录被占用 / 跨卷）就**继续用旧目录**：名字不一致只是难看，
+    丢数据是事故。
+    """
+    new = base / APP_NAME
+    if new.exists():
+        return new
+    for legacy in _LEGACY_APP_NAMES:
+        old = base / legacy
+        if not old.is_dir():
+            continue
+        try:
+            old.rename(new)
+        except OSError:
+            return old          # 搬不动就地用，绝不让用户数据失联
+        return new
+    return new
+
+
 def _app_data_dir() -> Path:
     """便携目录不可写时的回退：各平台的用户级应用数据目录。"""
     if sys.platform == "win32":
@@ -59,7 +89,7 @@ def _app_data_dir() -> Path:
     else:  # Linux / 其他
         base = Path(os.environ.get("XDG_DATA_HOME")
                     or Path.home() / ".local" / "share")
-    return base / APP_NAME
+    return _adopt_legacy_dir(base)
 
 
 _user_dir_cache: Path | None = None

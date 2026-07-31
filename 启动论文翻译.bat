@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 set PYTHONUTF8=1
-title PDF 论文翻译
+title 论文翻译工具
 
 if not exist "%~dp0程序\webui.py" (
   echo.

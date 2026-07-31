@@ -1,6 +1,6 @@
 """网页版前端 · 本地服务（零新依赖，标准库实现）。
 
-用法：双击外层 启动PDF翻译.bat，或 `py webui.py`。
+用法：双击外层 启动论文翻译.bat，或 `py webui.py`。
 只绑定 127.0.0.1（仅本机可访问）；翻译内核 100% 复用 src/pipeline。
 API 约定见 docs/前端设计.md 第 4 节。
 """
@@ -302,7 +302,7 @@ def main(app_window: bool = True):
         try:
             import webview
             print("  正在打开应用窗口……（关闭窗口即退出）")
-            webview.create_window("PDF 论文翻译", url, width=1080, height=860,
+            webview.create_window("论文翻译工具", url, width=1080, height=860,
                                   min_size=(820, 640))
             webview.start()          # 阻塞至窗口关闭
             return
@@ -310,7 +310,7 @@ def main(app_window: bool = True):
             print(f"  [i] 应用窗口不可用（{e}），改用系统浏览器。")
 
     print("=" * 52)
-    print("  PDF 论文翻译已启动")
+    print("  论文翻译工具已启动")
     print(f"  地址：{url}（仅本机可访问）")
     print("  关闭本窗口即退出程序。")
     print("=" * 52)

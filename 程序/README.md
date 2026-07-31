@@ -1,11 +1,12 @@
-# PDF 论文翻译工具（英文 → 中文）— 技术说明
+# 论文翻译工具 — 技术说明
 
-[![测试](https://github.com/morning-cml/pdf-translator/actions/workflows/test.yml/badge.svg)](https://github.com/morning-cml/pdf-translator/actions/workflows/test.yml)
+[![测试](https://github.com/morning-cml/paper-translator/actions/workflows/test.yml/badge.svg)](https://github.com/morning-cml/paper-translator/actions/workflows/test.yml)
 
-把英文文档翻译成中文，**完整保留图片、公式、表格与排版**，译文落在原文对应
-位置。支持格式：**PDF · Word(.docx) · Markdown · TXT · SRT 字幕**。
-另有扫描版 PDF（本地 OCR）、表格逐单元格翻译、双语对照输出、译文质量自检、
-持久化翻译缓存、多翻译服务（任意 OpenAI 兼容接口）。
+把文档翻译成另一种语言，**完整保留图片、公式、表格与排版**，译文落在原文对应
+位置。支持格式：**PDF · Word(.docx) · PowerPoint(.pptx) · Markdown · TXT · SRT 字幕**。
+语言方向：源语言 11 种（含自动检测）× 目标语言 10 种（中/英/日/韩/德/法/西/俄/葡/意，
+见 `src/languages.py`）。另有扫描版 PDF（本地 OCR）、表格逐单元格翻译、双语对照输出、
+译文质量自检、持久化翻译缓存、多翻译服务（任意 OpenAI 兼容接口）。
 
 > **使用者请看外层的《使用说明.html》**（双击浏览器打开）。
 > **想快速了解项目现状与下一步 → `docs/项目总览.md`**（现状快照 + 遗留问题
@@ -19,7 +20,7 @@
 py -m pip install -r requirements.txt     # 依赖（含 OCR/DOCX；文件对话框用自带 tkinter）
 py webui.py                               # 【正式】原生应用窗口（pywebview）
 py webui.py --browser                     # 同一界面，改用系统浏览器（调试用）
-py -m pytest tests -q                     # 测试套件（179 项）
+py -m pytest tests -q                     # 测试套件（198 项）
 py run_gui.py                             # 备用 tkinter 界面（已冻结，勿加新功能）
 py translate_cli.py "论文.pdf" --mock     # 离线跑通版式（不花 token）
 py translate_cli.py "论文.pdf" --pages 2  # 真实试译前 2 页
@@ -28,7 +29,7 @@ py samples/make_scanned.py                # 生成扫描版样张 → 回归 OCR
 ```
 
 > **macOS / Linux**：把上面的 `py` 换成 `python3`；一键启动用根目录的
-> `启动PDF翻译.command`（首次可能要 `chmod +x` 一次）。源码在三平台通用。
+> `启动论文翻译.command`（首次可能要 `chmod +x` 一次）。源码在三平台通用。
 
 ## 架构（数据流）
 
@@ -73,7 +74,7 @@ py samples/make_scanned.py                # 生成扫描版样张 → 回归 OCR
 
 ```
 Translation/                       # 外层 = 用户桌面工作区
-├─ 启动PDF翻译.bat                 # 【唯一入口】起本地服务并打开浏览器
+├─ 启动论文翻译.bat                # 【唯一入口】起本地服务并打开浏览器
 ├─ 使用说明.html                   # 用户手册
 └─ 程序/
    ├─ webui.py                     # 【正式界面】网页版本地服务（标准库 HTTP，仅 127.0.0.1）
@@ -134,6 +135,8 @@ py build.py --clean             # 清理中间产物（只动 build/，不动 re
 - **路径隔离**（`src/paths.py`）：只读资源走 `sys._MEIPASS`；配置/缓存/模型/
   字体写到 **exe 同级 `data/`**（便携），该处不可写时退回 `%APPDATA%`。
   ⚠️ 用户数据绝不能落在 `_MEIPASS`——那是临时目录，退出即删。
+  改程序名时**必须同步加目录迁移**（`_adopt_legacy_dir`）：老用户的 Key 和
+  花过钱的翻译缓存都按旧名存着，`paths.APP_NAME` 因此故意不从 `version.py` 取。
 - **关于"防逆向"**：本项目为 AGPL-3.0，分发时必须提供完整源码，故混淆无意义
   且可能违反许可，`--obfuscate` 会被显式忽略并给出提示。正当加固为：不打包
   任何密钥、入包的是字节码、产出 SHA256 清单、预留 `--sign` 代码签名钩子

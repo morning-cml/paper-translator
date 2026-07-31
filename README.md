@@ -1,8 +1,8 @@
-# PDF 翻译工具
+# 论文翻译工具
 
-[![测试](https://github.com/morning-cml/pdf-translator/actions/workflows/test.yml/badge.svg)](https://github.com/morning-cml/pdf-translator/actions/workflows/test.yml)
+[![测试](https://github.com/morning-cml/paper-translator/actions/workflows/test.yml/badge.svg)](https://github.com/morning-cml/paper-translator/actions/workflows/test.yml)
 [![许可](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
-[![下载](https://img.shields.io/github/v/release/morning-cml/pdf-translator?label=下载)](https://github.com/morning-cml/pdf-translator/releases/latest)
+[![下载](https://img.shields.io/github/v/release/morning-cml/paper-translator?label=下载)](https://github.com/morning-cml/paper-translator/releases/latest)
 
 把文档翻译成另一种语言，**图片、公式、表格与排版原样保留**，译文就落在原文
 的位置上。面向科研论文，非程序员双击即用。
@@ -28,17 +28,17 @@
 
 ### Windows
 
-到 [**Releases**](https://github.com/morning-cml/pdf-translator/releases/latest)
-下载 zip，解压后双击 `PDF翻译工具.exe` 即可，**不需要装 Python**。
+到 [**Releases**](https://github.com/morning-cml/paper-translator/releases/latest)
+下载 zip，解压后双击 `论文翻译工具.exe` 即可，**不需要装 Python**。
 
 > **⚠️ 整个文件夹一起用**：exe 本体只有 14 MB，真正的程序在旁边的 `_internal\`
 > 文件夹里。只拷 exe 出来是跑不起来的。
 
 ### macOS（Apple 芯片）
 
-到 [**Releases**](https://github.com/morning-cml/pdf-translator/releases/latest)
-下载文件名带 **`-mac-arm64`** 的 zip，解压出「PDF翻译工具」文件夹，里面是
-`PDF翻译工具.app` 与说明文档。与 Windows 版**同源构建、同一次 CI 同步发布**，
+到 [**Releases**](https://github.com/morning-cml/paper-translator/releases/latest)
+下载文件名带 **`-mac-arm64`** 的 zip，解压出「论文翻译工具」文件夹，里面是
+`论文翻译工具.app` 与说明文档。与 Windows 版**同源构建、同一次 CI 同步发布**，
 **不需要装 Python**。
 
 > **⚠️ 第一次打开一定会被系统拦下，这是正常的**——本工具没有购买苹果的开发者
@@ -97,11 +97,11 @@
 ## 从源码运行（开发者）
 
 ```bash
-git clone https://github.com/morning-cml/pdf-translator.git
-cd pdf-translator/程序
+git clone https://github.com/morning-cml/paper-translator.git
+cd paper-translator/程序
 py -m pip install -r requirements.txt
 py webui.py                                # 启动（原生应用窗口）
-py -m pytest -q                            # 测试套件（179 项）
+py -m pytest -q                            # 测试套件（198 项）
 py translate_cli.py "论文.pdf" --mock      # 离线跑通版式，不花 token
 ```
 
