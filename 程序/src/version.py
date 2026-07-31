@@ -4,7 +4,7 @@
 遵循语义化版本：主版本.次版本.修订号。
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 APP_NAME = "论文翻译工具"
 APP_NAME_EN = "Paper Translator"
 PUBLISHER = "morning-cml"
