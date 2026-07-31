@@ -222,6 +222,115 @@ def _heading_start_sizes(layouts: List[PageLayout],
     return forced
 
 
+# 正文里的引用标记："[41]"、"[46, 82]"、"[25–27]"。只认方括号内清一色是
+# 数字与分隔符的串，避免把 "[见附录]" 这类也当成引用。
+_CITE_GROUP = re.compile(r"\[[\d\s,;–—-]+\]")
+_NUM = re.compile(r"\d+")
+# 链接源文字是否像"引用片段"：原文里一条链接常只盖住 "[46," 或 "82]" 半截。
+# 允许句点：链接框常紧贴句末的 "."，而句点很窄，稍有重叠就会被算进来，
+# 于是文字成了 "[99]."。不放行的话这一类会被整批拒掉（实测占被拒的绝大多数）。
+_CITE_FRAG = re.compile(r"^[\[\]\d.,;\s–—-]+$")
+
+
+def _snapshot_links(page) -> tuple:
+    """抹除**之前**把页面链接存下来。
+
+    起因：原文（LaTeX hyperref 生成）里正文的 "[41]" 本来就链到参考文献条目，
+    实测某篇论文前 6 页就有 100 条。而 `apply_redactions` 会**连带删除与抹除区
+    重叠的注释**——译文输出里 111 条只剩 12 条，等于我们把原有的超链接毁掉了。
+
+    所以要做的不是"实现超链接"，而是**别弄丢，并且跟着重排后的译文重新锚定**。
+
+    返回 (原始链接列表, {引用号: 链接字典})。
+    """
+    import fitz
+    links = page.get_links()
+    cand = [lk for lk in links
+            if lk.get("kind") in (fitz.LINK_GOTO, fitz.LINK_NAMED)
+            and lk.get("page", -1) >= 0]
+    cites: dict = {}
+    if not cand:
+        return links, cites
+
+    # 整页词表只取一次。逐个链接调 page.get_textbox() 会把**整页重新解析一遍**，
+    # 而一页上百个引用链接就是上百次全页解析——构建时间会成倍膨胀。
+    words = page.get_text("words")   # (x0, y0, x1, y1, word, block, line, wordno)
+    for lk in cand:
+        lx0, ly0, lx1, ly1 = lk["from"]
+        # 要求词的**多半宽度**落在链接框内。只判"有重叠"的话，一个只盖住
+        # "[41]" 的窄框会把紧挨着的邻词整个拉进来，拼出 "the [41] of" 这种串，
+        # 下面的 _CITE_FRAG 当场判否——实测因此漏掉了大半引用链接。
+        parts = []
+        for w in words:
+            if not (w[1] < ly1 and w[3] > ly0):
+                continue
+            ov = min(w[2], lx1) - max(w[0], lx0)
+            if ov > 0.5 * max(w[2] - w[0], 0.01):
+                parts.append(w[4])
+        txt = " ".join(parts).strip()
+        if not txt or len(txt) > 10 or not _CITE_FRAG.match(txt):
+            continue
+        for m in _NUM.finditer(txt):
+            cites.setdefault(int(m.group()), lk)
+    return links, cites
+
+
+def _cite_rects(text: str, x: float, y_top: float, h: float, size: float,
+                measure: Callable[[str, float], float]) -> list:
+    """在一段**已绘制**的译文里定位引用编号，返回 [(编号, 矩形)]。
+
+    位置靠对前缀重新测宽得到——测宽函数与绘制用的是同一套字体，所以算出来的
+    x 与实际字形位置一致（这也是 measure 必须按 正文/粗体 分开的原因之一）。
+    """
+    out = []
+    for g in _CITE_GROUP.finditer(text):
+        for m in _NUM.finditer(g.group()):
+            i, j = g.start() + m.start(), g.start() + m.end()
+            x0 = x + measure(text[:i], size)
+            x1 = x + measure(text[:j], size)
+            if x1 > x0:
+                out.append((int(m.group()), (x0, y_top, x1, y_top + h)))
+    return out
+
+
+def _relink(page, links, cites, blocks, new_cites) -> None:
+    """恢复链接：没动过的原样放回，重排过的按译文新位置重新锚定。"""
+    import fitz
+    erased = [fitz.Rect(r) for b in blocks for r in b.line_rects]
+    alive = {(round(fitz.Rect(l["from"]).x0, 1), round(fitz.Rect(l["from"]).y0, 1))
+             for l in page.get_links()}
+
+    # ① 落在未抹除区域的链接：文字没变，原样恢复（作者 ORCID、DOI、外链等）
+    for lk in links:
+        r = fitz.Rect(lk["from"])
+        if (round(r.x0, 1), round(r.y0, 1)) in alive:
+            continue                      # 还活着，别插重复的
+        if any(r.intersects(e) for e in erased):
+            continue                      # 原文已被抹掉，位置作废
+        try:
+            page.insert_link(lk)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # ② 被重排的引用编号：锚到译文里的新位置，目标沿用原链接（精确到条目）
+    seen = set()
+    for num, rect in new_cites:
+        lk = cites.get(num)
+        if lk is None:
+            continue
+        key = (num, round(rect[0], 1), round(rect[1], 1))
+        if key in seen:
+            continue
+        seen.add(key)
+        d = {"kind": fitz.LINK_GOTO, "from": fitz.Rect(rect), "page": lk["page"]}
+        if lk.get("to") is not None:
+            d["to"] = lk["to"]
+        try:
+            page.insert_link(d)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _redact_page(page, blocks) -> None:
     import fitz
     added = 0
@@ -267,6 +376,7 @@ def _draw_page(page, layout: PageLayout, blocks, src_doc,
             pass  # insert_text 时仍可用内置名自动加载
 
     placed: List[tuple] = []   # 本页已放置译文/公式的矩形，后续块逐行避让
+    new_cites: List[tuple] = []   # 译文里引用编号的新位置，供 _relink 重新锚定
     for b in blocks:
         if getattr(b, "from_ocr", False):
             # 扫描页：原文是图像像素，先用白底盖住原文各行再写译文
@@ -306,6 +416,8 @@ def _draw_page(page, layout: PageLayout, blocks, src_doc,
         for it in laid.items:
             if it.kind == "text":
                 baseline = it.y_top + 0.5 * (it.h - it.size) + _ASCENT * it.size
+                new_cites.extend(_cite_rects(it.text, it.x, it.y_top, it.h,
+                                             it.size, measure))
                 if active_file:
                     # 外置字体自带比例西文字形，中西文同一套字面，整串一次画完。
                     page.insert_text((it.x, baseline), it.text, fontname=fontname,
@@ -333,6 +445,7 @@ def _draw_page(page, layout: PageLayout, blocks, src_doc,
                                        clip=clip)
                 except Exception:  # noqa: BLE001
                     pass  # 单个公式回贴失败不影响整页
+    return new_cites
 
 
 def build_output(input_path: str, output_path: str,
@@ -367,8 +480,13 @@ def build_output(input_path: str, output_path: str,
             blocks = [b for b in layout.blocks if b.translatable and b.translation]
             if not blocks:
                 continue
+            # 链接必须在抹除**之前**快照：apply_redactions 会连带删掉与抹除区
+            # 重叠的注释，原文正文里的 "[41] → 参考文献" 会成片消失。
+            links, cites = _snapshot_links(page)
             _redact_page(page, blocks)
-            _draw_page(page, layout, blocks, src, fonts, measures, forced_sizes)
+            new_cites = _draw_page(page, layout, blocks, src, fonts, measures,
+                                   forced_sizes)
+            _relink(page, links, cites, blocks, new_cites)
 
         if mode == "bilingual":
             out = fitz.open()

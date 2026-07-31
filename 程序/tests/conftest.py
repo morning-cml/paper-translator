@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -36,16 +37,52 @@ def _isolate_user_config(tmp_path_factory):
     mp.undo()
 
 
-# 真实论文放在 程序/ 的上一级（用户工作区）；没有则相关用例自动跳过
-PAPER = ROOT.parent / ("Observing a robot peer's failures facilitates "
-                       "students' classroom learning.pdf")
+# 真实论文的结构性回归基准。**不入库**（论文有版权），所以只能靠约定定位。
+#
+# ⚠️ 这里曾经是个隐患：路径硬编码成一个文件名，文件一旦被挪走，11 项回归就
+# 整批静默跳过——其中包括「可译块数 120~145」这条，正是用来卡解析内核改动的。
+# 2026-07-31 真发生过：论文被移到别的目录，测试从 248 passed 变成 237 passed +
+# 11 skipped，而 `-q` 的输出里 skipped 毫不起眼，差点带着未经回归的解析改动提交。
+#
+# 现在：可用 PAPER_TRANSLATOR_TEST_PAPER 指定任意路径；本机缺失时在结果末尾
+# **显式告警**（见 pytest_terminal_summary），不再无声无息。CI 上本就没有这份
+# 论文，属预期跳过，不告警。
+_PAPER_NAME = ("Observing a robot peer's failures facilitates "
+               "students' classroom learning.pdf")
+_PAPER_ENV = "PAPER_TRANSLATOR_TEST_PAPER"
 SAMPLE = ROOT / "samples" / "sample_paper.pdf"
+
+
+def _find_paper() -> Path | None:
+    override = os.environ.get(_PAPER_ENV)
+    if override:
+        p = Path(override).expanduser()
+        return p if p.is_file() else None
+    p = ROOT.parent / _PAPER_NAME          # 约定位置：程序/ 的上一级
+    return p if p.is_file() else None
+
+
+PAPER = _find_paper()
+_IN_CI = bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """基准论文缺失时把话说明白——静默跳过比测试失败更危险。"""
+    if PAPER is not None or _IN_CI:
+        return
+    n = len(terminalreporter.stats.get("skipped", []))
+    terminalreporter.write_sep("=", "基准论文缺失", yellow=True, bold=True)
+    terminalreporter.write_line(
+        f"未找到《{_PAPER_NAME}》，{n} 项真实论文回归**未执行**"
+        f"（含解析结构不变量）。")
+    terminalreporter.write_line(
+        f"放回 {ROOT.parent} 即可，或设 {_PAPER_ENV}=<pdf 路径> 指向别处。")
 
 
 @pytest.fixture(scope="session")
 def paper_path():
-    if not PAPER.exists():
-        pytest.skip("真实论文不在工作区，跳过")
+    if PAPER is None:
+        pytest.skip(f"基准论文不在工作区（可用 {_PAPER_ENV} 指定路径）")
     return str(PAPER)
 
 
