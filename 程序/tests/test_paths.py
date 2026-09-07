@@ -122,3 +122,64 @@ def test_failed_rename_keeps_using_legacy_dir(tmp_path, monkeypatch):
 
     assert got == old, "搬不动就该回退到旧目录，而不是指向一个空的新目录"
     assert got.joinpath("config.json").read_text(encoding="utf-8") == '{"api_key":"sk-old"}'
+
+
+# ---------------------------------------------------------------------------
+# 网页版静态资源：越界判定必须按路径层级，不能靠字符串前缀
+# ---------------------------------------------------------------------------
+
+class _StubHandler:
+    """只实现 _static 会用到的那几个 BaseHTTPRequestHandler 成员。"""
+
+    def __init__(self):
+        import io
+        self.error = None
+        self.wfile = io.BytesIO()
+
+    def send_error(self, code):
+        self.error = code
+
+    def send_response(self, code):
+        pass
+
+    def send_header(self, *a):
+        pass
+
+    def end_headers(self):
+        pass
+
+
+def _serve(monkeypatch, web_root, rel):
+    import webui
+    monkeypatch.setattr(webui, "WEB", web_root)
+    h = _StubHandler()
+    webui.Handler._static(h, rel)
+    return h
+
+
+def test_static_serves_files_inside_web(tmp_path, monkeypatch):
+    web = tmp_path / "web"
+    (web / "css").mkdir(parents=True)
+    (web / "css" / "base.css").write_text("body{}", encoding="utf-8")
+    h = _serve(monkeypatch, web, "css/base.css")
+    assert h.error is None and h.wfile.getvalue() == b"body{}"
+
+
+@pytest.mark.parametrize("rel", [
+    "../web2/secret.js",        # 同级的 "web…" 兄弟目录
+    "../config.json",           # 上一级
+    "../../LICENSE",            # 再上一级
+])
+def test_static_rejects_anything_outside_web(tmp_path, monkeypatch, rel):
+    """回归 2026-09-07：原先用 str(p).startswith(str(WEB)) 判越界，
+    于是 web2/、webdata/ 这类**同级兄弟目录**因共享 "web" 前缀被一并暴露。
+    只有按路径层级（is_relative_to）判定才真的把访问关在 web/ 里。"""
+    web = tmp_path / "web"
+    web.mkdir()
+    (tmp_path / "web2").mkdir()
+    (tmp_path / "web2" / "secret.js").write_text("APIKEY", encoding="utf-8")
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "LICENSE").write_text("x", encoding="utf-8")
+    h = _serve(monkeypatch, web, rel)
+    assert h.error == 404, f"{rel} 不该被服务出去"
+    assert h.wfile.getvalue() == b""

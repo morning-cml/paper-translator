@@ -167,7 +167,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _static(self, rel: str):
         p = (WEB / rel).resolve()
-        if not str(p).startswith(str(WEB.resolve())) or not p.is_file():
+        # 越界判定必须按**路径层级**来：字符串前缀比较会把同级的 "web…" 兄弟
+        # 目录（web2/、webdata/ 之类）也算作在 web/ 内，等于把它们一并暴露。
+        if not p.is_relative_to(WEB.resolve()) or not p.is_file():
             self.send_error(404)
             return
         data = p.read_bytes()

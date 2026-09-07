@@ -89,3 +89,34 @@ def test_heading_numbers_matched(text):
 ])
 def test_non_headings_not_matched(text):
     assert not _HEADING_NUM.match(text), f"{text!r} 不应识别为标题行"
+
+
+# ---- 公式检测规则可配置（对齐 --formular-font-pattern / --formular-char-pattern）----
+
+def test_extra_char_pattern_widens_formula_protection(paper_path):
+    """内置字符表收不全时，用户可用正则**追加**，不必改源码。"""
+    from src.pdf_parser import parse_pdf
+    base = sum(len(b.formulas) for L in parse_pdf(paper_path) for b in L.blocks)
+    more = sum(len(b.formulas)
+               for L in parse_pdf(paper_path, formula_char_pattern=r"[\u0370-\u03FF]")
+               for b in L.blocks)
+    assert more > base, "追加希腊字母规则后应识别出更多公式区"
+
+
+def test_bad_pattern_is_ignored_not_fatal(paper_path):
+    """正则写错不该让整份解析崩掉——用户手填的东西必须容错。"""
+    from src.pdf_parser import parse_pdf
+    base = sum(len(b.formulas) for L in parse_pdf(paper_path) for b in L.blocks)
+    got = sum(len(b.formulas)
+              for L in parse_pdf(paper_path, formula_font_pattern="([unclosed")
+              for b in L.blocks)
+    assert got == base
+
+
+def test_rules_do_not_leak_between_runs(paper_path):
+    """规则是模块级状态，必须随上下文退出还原，不能污染下一次解析。"""
+    from src.pdf_parser import parse_pdf
+    base = sum(len(b.formulas) for L in parse_pdf(paper_path) for b in L.blocks)
+    parse_pdf(paper_path, formula_char_pattern=r"[\u0370-\u03FF]")
+    again = sum(len(b.formulas) for L in parse_pdf(paper_path) for b in L.blocks)
+    assert again == base

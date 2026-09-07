@@ -63,10 +63,19 @@ _TERMINAL = set("。．.!?！？;；:：…")
 
 
 def _is_body(b) -> bool:
-    """正文块才参与跨栏缝合：标题/OCR/表格单元格都不是连续行文。"""
+    """正文块才参与跨栏缝合：标题/OCR/表格单元格都不是连续行文。
+
+    **含行内公式的块一律不缝合**：⟦Fn⟧ 的编号是**块内局部**的，两块拼成一个
+    翻译单元后编号会撞车（a 的 ⟦F1⟧ 与 b 的 ⟦F1⟧ 同时出现）；而 `_split_translation`
+    只按字符比例找句读处切，根本不认占位符归属。结果是译文里的占位符可能落到
+    另一块名下——那一块要么按自己的 formulas 贴出**错误的公式图**，要么查不到
+    该编号而**静默丢掉公式**（原文已被抹除，公式就此消失）。
+    缝合只是让被腰斩的句子翻得更连贯，代价不值得；这类段落各自单独翻译即可。
+    """
     return (b.translatable and not getattr(b, "bold", False)
             and not getattr(b, "from_ocr", False)
             and not getattr(b, "cell_rect", None)
+            and not getattr(b, "formulas", None)
             and len(b.text or "") > 60)
 
 
@@ -208,6 +217,66 @@ def _doc_context(layouts) -> str:
     return ctx
 
 
+def build_doc_glossary(translator, texts, glossary: Glossary, cfg: Config,
+                       report: Optional[ProgressCB] = None,
+                       frac: float = 0.09) -> Glossary:
+    """全文术语自动抽取 → 一次性译出 → 并入本次使用的术语库。
+
+    对齐 BabelDOC 的 auto-extract glossary。要解决的问题很具体：静态 CSV 只有
+    通用术语，而每篇论文都有自己的核心说法；它们是**逐批**送译的，同一个词
+    这批译成"生成性失败"、下一批译成"有效失败"，读者在同一篇文章里看到三种
+    叫法。BabelDOC 把 terminology consistency 单列为指标，人工评分 4.47 对
+    PDFMathTranslate 的 3.34，差距正在这里。
+
+    成本：抽取纯本地不花钱；译术语表**全篇只发一次请求**，且结果进持久缓存，
+    重跑同一篇零额外开销。任何一步失败都原样退回旧术语库，绝不影响主流程。
+    """
+    if not texts or not getattr(cfg, "auto_glossary", True):
+        return glossary
+    if not getattr(translator, "supports_terms", False):
+        return glossary          # Mock 等不具备该能力，连抽取都不必跑
+    from .glossary import auto_extract_terms
+    limit = int(getattr(cfg, "auto_glossary_limit", 30) or 30)
+    terms = auto_extract_terms(texts, limit=limit, known=glossary.entries)
+    if not terms:
+        return glossary
+    try:
+        pairs = translator.translate_terms(terms)
+    except Exception:  # noqa: BLE001 — 术语表是增强项，失败不该连累翻译
+        pairs = {}
+    if not pairs:
+        return glossary
+    if report:
+        report(f"本文术语表：自动抽取并统一 {len(pairs)} 条术语"
+               f"（如 {'、'.join(list(pairs)[:3])}）", frac)
+    path = (getattr(cfg, "save_glossary_path", "") or "").strip()
+    if path:
+        _save_terms_csv(path, pairs, report, frac)
+    return glossary.merged_with(pairs)
+
+
+def _save_terms_csv(path: str, pairs: dict, report=None, frac: float = 0.09) -> None:
+    """把自动抽取的术语表存成 CSV，格式与 glossary/cs_terms.csv 一致。
+
+    存下来是为了**能被人接管**：机器抽的术语表未必条条精准，导出成同格式的
+    CSV，用户挑一挑就能并进自己的静态库，下次连那一次请求都省了。
+    """
+    import csv as _csv
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("w", encoding="utf-8-sig", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["en", "zh", "note"])
+            for en, zh in sorted(pairs.items()):
+                w.writerow([en, zh, "auto"])
+        if report:
+            report(f"本文术语表已导出：{p}", frac)
+    except Exception as e:  # noqa: BLE001
+        if report:
+            report(f"术语表导出失败（不影响翻译）：{e}", frac)
+
+
 def _estimate_line(translator, texts, cfg: Config) -> str:
     """T5：请求前成本预估（剔除缓存命中；粗估 token，可选换算金额）。"""
     todo = translator.pending_texts(texts)
@@ -260,6 +329,53 @@ def output_suffix(mode: str, ext: str = ".pdf") -> str:
     return {"bilingual": "_translation_bilingual",
             "sidebyside": "_translation_sidebyside",
             "updown": "_translation_updown"}.get(mode, "_translation")
+
+
+class PageRangeError(ValueError):
+    """页码范围写法不合法（面向用户的中文提示）。"""
+
+
+def parse_page_range(spec: str, n_pages: int) -> set:
+    """把 "1-3,5,8-" 这类页码范围解析成**0 起**的页号集合（页码本身 1 起）。
+
+    语法与同类工具（BabelDOC 的 `--pages`）对齐，四种写法：
+        "5"     单页          "3-7"   闭区间
+        "8-"    从第 8 页到末尾   "-4"    从第 1 页到第 4 页
+    逗号分隔可任意组合；重叠与乱序都允许（结果取并集）。
+
+    存在的意义：原有的"试译前 N 页"只能从头数，而真实需求常是"只要方法和
+    结果那几页""跳过前面的封面"，以及**大文档分批翻译**（先 1-50，再 51-100，
+    已译段走缓存不重复计费）——同类工具用 `--max-pages-per-part` 自动分段，
+    我们这条流水线本就是逐页流式处理、每批落盘可续跑，把范围交给用户点名
+    更直接，也不必引入拆分/合并文档那套额外机器。
+    """
+    out: set = set()
+    if not spec or n_pages <= 0:
+        return out
+    for raw in spec.replace("，", ",").split(","):
+        part = raw.strip()
+        if not part:
+            continue
+        try:
+            if "-" in part:
+                lo_s, hi_s = part.split("-", 1)
+                lo = int(lo_s) if lo_s.strip() else 1
+                hi = int(hi_s) if hi_s.strip() else n_pages
+            else:
+                lo = hi = int(part)
+        except ValueError:
+            raise PageRangeError(
+                f"页码范围「{part}」看不懂。正确写法如：1-3,5,8- （逗号分隔，"
+                "支持单页 / 区间 / 开口区间）") from None
+        if lo < 1 or hi < 1:
+            raise PageRangeError(f"页码从 1 起，收到「{part}」")
+        if lo > hi:
+            lo, hi = hi, lo
+        out.update(range(lo - 1, min(hi, n_pages)))
+    if not out:
+        raise PageRangeError(
+            f"页码范围「{spec}」在这份 {n_pages} 页的文档里一页都选不中")
+    return out
 
 
 _KNOWN_SERVICES = {
@@ -339,19 +455,30 @@ def translate_pdf(
 
     check_cancel()
     report("正在解析 PDF…", 0.02)
-    layouts = parse_pdf(input_path,
-                        progress=lambda msg, frac: report(msg, 0.02 + 0.06 * frac))
+    layouts = parse_pdf(
+        input_path,
+        progress=lambda msg, frac: report(msg, 0.02 + 0.06 * frac),
+        formula_font_pattern=getattr(cfg, "formula_font_pattern", "") or "",
+        formula_char_pattern=getattr(cfg, "formula_char_pattern", "") or "")
     blocks = [b for layout in layouts for b in layout.blocks if b.translatable]
-    # T3 试译模式：只翻译前 max_pages 页，其余页保留原文（便宜预览）
+    # 选页：page_range（"1-3,5,8-" 任意页码）优先，其次 T3 试译前 N 页。
+    # 两者都是"只翻一部分、其余保留原文"，page_range 只是把范围说得更细。
     max_pages = int(getattr(cfg, "max_pages", 0) or 0)
-    if max_pages > 0:
+    spec = (getattr(cfg, "page_range", "") or "").strip()
+    wanted = parse_page_range(spec, len(layouts)) if spec else None
+    if wanted is not None:
+        blocks = [b for b in blocks if b.page_index in wanted]
+    elif max_pages > 0:
         blocks = [b for b in blocks if b.page_index < max_pages]
     # T12 跨栏段落重排：被腰斩段配成同一翻译单元（整段送译，译后按比例拆回）
     units = _make_units(layouts, blocks)
     n_pairs = sum(1 for u in units if len(u) > 1)
     texts = [_unit_text(u) for u in units]
     n_ocr = sum(1 for L in layouts if any(b.from_ocr for b in L.blocks))
-    trial = f"（试译前 {max_pages} 页）" if max_pages > 0 else ""
+    if wanted is not None:
+        trial = f"（只翻第 {spec} 页，共 {len(wanted)} 页）"
+    else:
+        trial = f"（试译前 {max_pages} 页）" if max_pages > 0 else ""
     pair_note = f"，跨栏/跨页续段配对 {n_pairs} 组" if n_pairs else ""
     if n_ocr:
         report(f"共 {len(layouts)} 页（其中 {n_ocr} 页扫描版经 OCR 识别）、"
@@ -364,6 +491,8 @@ def translate_pdf(
     if translator is None:
         translator = make_translator(cfg, mock=mock,
                                      doc_context=_doc_context(layouts))
+    # 本文术语表（自动抽取 + 统一译名）：必须在翻译开始前建好，全篇共用
+    glossary = build_doc_glossary(translator, texts, glossary, cfg, report)
     if texts and not mock:
         try:
             report(_estimate_line(translator, texts, cfg), 0.09)   # T5 成本预估

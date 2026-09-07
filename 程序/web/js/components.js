@@ -191,9 +191,11 @@ export function initSettings() {
     $("s-baseurl").value = cfg.base_url || "";
     $("s-mode").value = cfg.output_mode || "translated";
     $("s-trial").value = cfg.max_pages || 0;
+    $("s-page-range").value = cfg.page_range || "";
     $("s-workers").value = cfg.max_workers || 8;
     $("s-backend").value = cfg.render_backend || "auto";
     $("s-thinking").checked = !!cfg.thinking;
+    $("s-auto-glossary").checked = cfg.auto_glossary !== false;
     $("s-direct").checked = cfg.use_system_proxy === false;
     $("s-glossary").value = cfg.glossary_path || "glossary/cs_terms.csv";
     const i = SERVICES.findIndex(
@@ -229,9 +231,12 @@ export function collectSettings() {
     target_lang: $("s-target").value,
     domain: comboValue("s-domain") || null,
     max_pages: Math.max(0, +$("s-trial").value || 0),
+    // 指定页码（"1-3,5,8-"）：非空时后端优先用它，忽略 max_pages
+    page_range: $("s-page-range").value.trim(),
     max_workers: Math.min(32, Math.max(1, +$("s-workers").value || 8)),
     render_backend: $("s-backend").value,
     thinking: $("s-thinking").checked,
+    auto_glossary: $("s-auto-glossary").checked,
     use_system_proxy: !$("s-direct").checked,
     refresh_cache: $("s-refresh").checked,   // 忽略缓存重译（仅本次，不落盘）
     glossary_path: $("s-glossary").value.trim() || null,

@@ -245,3 +245,40 @@ def test_already_chinese_not_retranslated(tmp_path):
     out, res = _mock(tmp_path, "a.txt", "这已经是中文了，不需要翻译。\n")
     assert res["blocks"] == 0
     assert out.strip() == "这已经是中文了，不需要翻译。"
+
+
+# ---------------- 行尾风格 ----------------
+def _mock_bytes(tmp_path, name, raw: bytes) -> bytes:
+    """按**字节**写入与读回：行尾必须逐字节校验，text 模式会自动改写而看不见。"""
+    src = tmp_path / name
+    src.write_bytes(raw)
+    out = tmp_path / ("out" + src.suffix)
+    translate_document(str(src), str(out), load_config(), mock=True)
+    return out.read_bytes()
+
+
+@pytest.mark.parametrize("name,raw", [
+    ("a.md", b"# Title\r\nsome body text goes here\r\n\r\n- item one\r\n"),
+    ("a.txt", b"first paragraph text\r\n\r\nsecond paragraph text\r\n"),
+    ("a.srt", b"1\r\n00:00:01,000 --> 00:00:02,000\r\nHello world\r\n\r\n"),
+])
+def test_crlf_source_keeps_crlf_everywhere(tmp_path, name, raw):
+    """CRLF 源文件不得译成**混合行尾**。
+
+    回归 2026-09-07：解析器按 "\n" 切行，行尾那个 \r 落在行内、被 strip()
+    吃掉；原样输出的结构行仍是 \r\n，经解析重组的译文行却只剩 \n，同一个
+    文件里两种行尾混着。Windows 是本工具的主力平台，.srt/.txt/.md 常态就是
+    CRLF，而 SRT 播放器与老编辑器对混合行尾并不宽容。
+    """
+    got = _mock_bytes(tmp_path, name, raw)
+    assert got.count(b"\n") == got.count(b"\r\n"), \
+        f"出现裸 LF（混合行尾）：{got!r}"
+
+
+@pytest.mark.parametrize("name,raw", [
+    ("a.md", b"# Title\nplain LF body line\n"),
+    ("a.txt", b"first paragraph\n\nsecond paragraph\n"),
+])
+def test_lf_source_stays_lf(tmp_path, name, raw):
+    """反向也要守住：LF 源文件不能被"顺手"改成 CRLF。"""
+    assert b"\r" not in _mock_bytes(tmp_path, name, raw)

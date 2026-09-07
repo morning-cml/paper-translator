@@ -99,3 +99,37 @@ def test_translation_stays_inside_cell(table_pdf, tmp_path):
         cx, cy = (w["x0"] + w["x1"]) / 2, (w["top"] + w["bottom"]) / 2
         assert any(c[0] - 3 <= cx <= c[2] + 3 and c[1] - 3 <= cy <= c[3] + 3
                    for c in cells), f"译文 {w['text']!r} 跑到单元格外"
+
+
+# ---------------------------------------------------------------------------
+# 窄框不得丢内容（layout 的"宁可溢出，不丢内容"承诺）
+# ---------------------------------------------------------------------------
+
+def _measure(t, s):
+    """近似测宽：CJK 一个字 1em、ASCII 半个。"""
+    return sum(s * (0.5 if ord(c) < 128 else 1.0) for c in t)
+
+
+@pytest.mark.parametrize("width", [8.0, 14.0, 18.0, 23.9])
+def test_narrow_box_still_lays_out_every_character(width):
+    """框比最小行宽（24pt）还窄时，译文一个字都不能少。
+
+    回归 2026-09-07：`_flow` 的 min_w = max(24, 2.5×字号) 原先不看目标框本身
+    有多宽，于是窄框（细表格列、窄块；解析层只要求块宽 ≥14pt、单元格 ≥8pt）
+    每一行都被判"过窄"而跳过，连 hard_bottom=False 的兜底排版也排不出任何
+    一项。而写回端此时已把原文抹除/白底覆盖 —— 整格空白，内容凭空消失。
+    """
+    from src.layout import layout_block
+    laid = layout_block("低风险", {}, (100.0, 50.0, 100.0 + width, 80.0),
+                        8.0, _measure, min_size=4.0)
+    assert "".join(i.text for i in laid.items) == "低风险"
+
+
+def test_obstacle_narrowed_band_is_still_skipped():
+    """窄框放行不得殃及避障：宽框里被障碍挤窄的带子仍要跳过、绕到下方。"""
+    from src.layout import layout_block
+    avoid = [(100.0, 50.0, 195.0, 62.0)]      # 100~195 被挡，仅剩 5pt
+    laid = layout_block("测试内容", {}, (100.0, 50.0, 200.0, 120.0), 8.0,
+                        _measure, avoid=avoid)
+    assert laid.items, "应当排得出内容"
+    assert laid.items[0].y_top >= 62.0, "首行必须绕到障碍下方，不能挤进 5pt 缝里"

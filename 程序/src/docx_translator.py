@@ -154,8 +154,8 @@ def translate_docx(
     from docx import Document
 
     from .glossary import Glossary
-    from .pipeline import (CancelledError, _doc_context, _estimate_line,
-                           _maybe_pangu, _translated, make_translator)
+    from .pipeline import (CancelledError, _estimate_line, _maybe_pangu,
+                           _translated, build_doc_glossary, make_translator)
 
     def report(msg: str, frac: float):
         if progress:
@@ -180,6 +180,7 @@ def translate_docx(
         body = next((t for t in texts if len(t) > 300), "")
         ctx = head + (("\n摘要节选：" + body[:250]) if body else "")
         translator = make_translator(cfg, mock=mock, doc_context=ctx)
+    glossary = build_doc_glossary(translator, texts, glossary, cfg, report)
     if texts and not mock:
         try:
             report(_estimate_line(translator, texts, cfg), 0.09)

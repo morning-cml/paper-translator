@@ -328,7 +328,7 @@ def translate_text_file(
 ) -> dict:
     from .glossary import Glossary
     from .pipeline import (CancelledError, _estimate_line, _maybe_pangu,
-                           _translated, make_translator)
+                           _translated, build_doc_glossary, make_translator)
 
     def report(msg: str, frac: float):
         if progress:
@@ -345,6 +345,13 @@ def translate_text_file(
     report("正在解析文档…", 0.03)
     _target_ctx.set(getattr(cfg, "target_lang", "zh") or "zh")  # 供解析期判目标语
     text = _read(input_path)
+    # 行尾风格随源文件：解析器内部一律按 LF 走，写回时再还原成原样。不做这一步
+    # 的话，CRLF 源文件（Windows 上的 .srt/.txt/.md 常态）译出来是**混合行尾**
+    # ——原样输出的结构行仍是 CRLF，而经解析重组的译文行只剩 LF（那个 CR 在
+    # strip() 时被吃掉了）。SRT 播放器与老编辑器对此并不宽容。
+    crlf = "\r\n" in text
+    if crlf:
+        text = text.replace("\r\n", "\n")
     segs = parser(text)
     units = [s for s in segs if s.kind == "text"]
     texts = [s.body for s in units]
@@ -357,6 +364,7 @@ def translate_text_file(
         body = next((t for t in texts if len(t) > 300), "")
         ctx = head + (("\n摘要节选：" + body[:250]) if body else "")
         translator = make_translator(cfg, mock=mock, doc_context=ctx)
+    glossary = build_doc_glossary(translator, texts, glossary, cfg, report)
     if texts and not mock:
         try:
             report(_estimate_line(translator, texts, cfg), 0.09)
@@ -397,6 +405,8 @@ def translate_text_file(
 
     report("正在写回文档…", 0.95)
     out = "".join(s.render() for s in segs)
+    if crlf:
+        out = out.replace("\n", "\r\n")   # 还原源文件的行尾风格
     from .paths import atomic_output
     with atomic_output(output_path) as _out:
         Path(_out.tmp).write_text(out, encoding="utf-8", newline="")

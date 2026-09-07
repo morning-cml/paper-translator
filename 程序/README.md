@@ -24,6 +24,8 @@ py -m pytest tests -q                     # 测试套件（198 项）
 py run_gui.py                             # 备用 tkinter 界面（已冻结，勿加新功能）
 py translate_cli.py "论文.pdf" --mock     # 离线跑通版式（不花 token）
 py translate_cli.py "论文.pdf" --pages 2  # 真实试译前 2 页
+py translate_cli.py "论文.pdf" --page-range 1-3,8-   # 只翻指定页码
+py -m src.metrics 原文.pdf 译文.pdf        # 版面保真评测（BIoU + UTB）
 py selftest_backend.py                    # 回填后端自测（配 自测-PyMuPDF.bat）
 py samples/make_scanned.py                # 生成扫描版样张 → 回归 OCR 管线
 ```
@@ -56,7 +58,7 @@ py samples/make_scanned.py                # 生成扫描版样张 → 回归 OCR
 | `src/layout_model.py` | 可选版面模型（DocLayout-YOLO onnx）：表格/图区/独立公式 |
 | `src/translator.py` | DeepSeek/OpenAI 兼容客户端；批量并发；缓存；失败降级；Mock |
 | `src/transcache.py` | 持久化翻译缓存（cache/translations.json，键含模型/领域/上下文） |
-| `src/glossary.py` | 术语库加载与注入（整词/长短语优先） |
+| `src/glossary.py` | 术语库加载与注入（整词/长短语优先）；**全文术语自动抽取** |
 | `src/layout.py` | 共享重排引擎：断行/禁则/逐行避障/向下扩展/缩号/两端对齐 |
 | `src/pdf_writer_fitz.py` | 【首选】精确抹除+CJK 嵌入+公式矢量回贴+双语拼页 |
 | `src/pdf_writer.py` | 【兜底】reportlab 行矩形覆盖+位图回贴 |
@@ -65,6 +67,7 @@ py samples/make_scanned.py                # 生成扫描版样张 → 回归 OCR
 | `src/pptx_translator.py` | PowerPoint 翻译（文本框/表格/备注，样式保真） |
 | `src/text_translator.py` | Markdown / TXT / SRT（结构与代码块用占位符保护） |
 | `src/quality.py` | 译文质量自检（截断/啰嗦/数字错漏/元话语/重复退化） |
+| `src/metrics.py` | 版面保真量化评测（BIoU + UTB），改排版内核前后纵向自比 |
 | `src/languages.py` | 多语言注册中心（语言表/目标语判定/长度带/模型推荐） |
 | `src/pipeline.py` | 编排；格式分派；跨栏配对；成本预估；后端选择与回退 |
 | `src/gui.py` | tkinter 界面（服务预设/领域/试译/三种输出模式） |
@@ -163,6 +166,11 @@ fetch、组件间经 store 通信；将来云端化只需改 `api.js` 的 BASE�
 
 - **一键自测**：双击 `自测-PyMuPDF.bat`——Mock 跑 15 页真实论文、校验页数/
   文字层、导出前后对比 PNG 到 `selftest_out/`。
+- **版面保真量化**：`py -m src.metrics 原文.pdf 译文.pdf`（只对 `translated`
+  模式有意义）。给两个数：**BIoU**（原文与译文版面元素的归一化 IoU）与
+  **UTB**（仍是源语言的正文块数）。用法是**纵向自比**——同一文档改动前后各跑
+  一次，掉了就是版面退化了。两个数必须一起看：完全不翻译时 BIoU 是满分，
+  只有 UTB 抓得住。测试套件里有回归下限（`tests/test_metrics.py`）。
 - **扫描版回归**：`py samples/make_scanned.py && py translate_cli.py
   samples/sample_scanned.pdf --mock`。
 - **改内核必做**：ASCII 密集压力测试（Mock near纯中文测不出 ASCII 宽度/溢出

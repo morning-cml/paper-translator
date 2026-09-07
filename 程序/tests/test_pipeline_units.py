@@ -110,3 +110,82 @@ def test_doc_context_picks_title_and_abstract():
 def test_doc_context_empty_is_safe():
     assert _doc_context([]) == ""
     assert _doc_context([FakeLayout([])]) == ""
+
+
+# ---- 跨栏缝合与行内公式占位符不能共存 ----
+
+def _blk(text, formulas=(), x0=36.0, top=400.0):
+    from src.pdf_parser import Block
+    return Block(text=text, x0=x0, top=top, x1=x0 + 244.0, bottom=top + 60.0,
+                 size=10.0, page_index=0, formulas=list(formulas),
+                 line_rects=[(x0, top, x0 + 244.0, top + 12.0)])
+
+
+def _page(blocks):
+    from src.pdf_parser import PageLayout
+    return PageLayout(page_index=0, width=595.0, height=780.0, blocks=blocks)
+
+
+_TAIL = ("The proposed estimator {}converges under mild assumptions "
+         "whenever the sample size grows without bound and")
+_HEAD = ("the regularization parameter {}is chosen appropriately according "
+         "to the theory outlined in the previous section.")
+
+
+def test_blocks_without_formulas_are_still_stitched():
+    """T12 本身不受影响：无公式的腰斩段照常缝合成一个翻译单元。"""
+    from src.pipeline import _make_units
+    a, b = _blk(_TAIL.format(""), x0=36.0), _blk(_HEAD.format(""), x0=310.0, top=100.0)
+    assert len(_make_units([_page([a, b])], [a, b])) == 1
+
+
+def test_blocks_with_formulas_are_never_stitched():
+    """含 ⟦Fn⟧ 的块不得参与缝合——否则公式会贴错或凭空消失。
+
+    回归 2026-09-07：⟦Fn⟧ 的编号是**块内局部**的，两块拼成一个翻译单元后
+    编号会撞车（a 的 ⟦F1⟧ 与 b 的 ⟦F1⟧ 同时出现）；而 `_split_translation`
+    只按字符比例找句读处切，根本不认占位符归属。于是译文里的占位符可能落到
+    另一块名下 —— 那一块要么按自己的 formulas 贴出**错误的公式图**，要么查
+    不到该编号而**静默丢掉公式**（原文已抹除，公式就此消失）。实测在仓库自带
+    的基准论文上就真丢了 2 个行内公式。
+    """
+    from src.pdf_parser import FormulaSpan
+    from src.pipeline import _make_units
+    a = _blk(_TAIL.format("⟦F1⟧ "), [FormulaSpan(1, 100, 400, 130, 412)])
+    b = _blk(_HEAD.format("⟦F1⟧ "), [FormulaSpan(1, 380, 100, 410, 112)],
+             x0=310.0, top=100.0)
+    units = _make_units([_page([a, b])], [a, b])
+    assert len(units) == 2, "含公式的块必须各自成单元"
+    assert all(len(u) == 1 for u in units)
+
+
+# ---- 页码范围（对齐同类工具的 --pages "1-3,5,8-" 语法） ----
+
+@pytest.mark.parametrize("spec,expect", [
+    ("5", [5]),
+    ("3-7", [3, 4, 5, 6, 7]),
+    ("8-", [8, 9, 10]),                       # 开口到末尾
+    ("-3", [1, 2, 3]),                        # 开口自第一页
+    ("1-2,5,9-", [1, 2, 5, 9, 10]),
+    ("3-1", [1, 2, 3]),                       # 写反了也认
+    ("2,2,2", [2]),                           # 重复取并集
+    ("1-999", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),   # 越界截到末页
+    ("1，3", [1, 3]),                          # 中文逗号
+    ("-", list(range(1, 11))),                # 两头都开口 = 整篇（与 8- / -3 一致）
+])
+def test_parse_page_range(spec, expect):
+    from src.pipeline import parse_page_range
+    assert sorted(p + 1 for p in parse_page_range(spec, 10)) == expect
+
+
+@pytest.mark.parametrize("spec", ["abc", "0-3", "20-30", "1-x"])
+def test_parse_page_range_rejects_nonsense(spec):
+    """看不懂或一页都选不中时必须**明确报错**，不能悄悄当成"整篇翻"。"""
+    from src.pipeline import PageRangeError, parse_page_range
+    with pytest.raises(PageRangeError):
+        parse_page_range(spec, 10)
+
+
+def test_empty_spec_is_not_an_error():
+    from src.pipeline import parse_page_range
+    assert parse_page_range("", 10) == set()

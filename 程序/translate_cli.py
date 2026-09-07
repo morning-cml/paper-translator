@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from src.config import load_config
-from src.pipeline import output_suffix, translate_document
+from src.pipeline import PageRangeError, output_suffix, translate_document
 from src.translator import TranslatorError
 
 
@@ -37,11 +37,25 @@ def main() -> int:
     ap.add_argument("--font", dest="font_path", help="中文字体文件路径（ttf/otf），默认自动找 fonts/ 目录")
     ap.add_argument("--pages", type=int, default=None,
                     help="试译模式：只翻译前 N 页（其余页保留原文，便宜预览）")
+    ap.add_argument("--page-range", dest="page_range", default=None,
+                    help='只翻指定页码，1 起，如 "1-3,5,8-"（单页/区间/开口区间，'
+                         "逗号分隔）。给了本项则忽略 --pages；大文档可据此分批翻，"
+                         "已译段走缓存不重复计费")
     ap.add_argument("--no-cache", action="store_true",
                     help="禁用持久化翻译缓存（默认开启，同段落重跑不重复计费）")
     ap.add_argument("--refresh-cache", action="store_true",
                     help="忽略已有缓存重新翻译并覆盖旧结果（上次翻得不对时用）")
     ap.add_argument("--domain", help="学科领域（影响翻译口径，默认 计算机科学）")
+    ap.add_argument("--no-auto-glossary", action="store_true",
+                    help="关闭「本文术语表」（默认开启：译前抽取全文高频术语、"
+                         "一次性译出并全篇统一译名，只多花一次请求且进缓存）")
+    ap.add_argument("--save-glossary", dest="save_glossary_path", default=None,
+                    metavar="CSV", help="把自动抽取的术语表导出到该 CSV，"
+                                        "格式同 glossary/cs_terms.csv，可人工挑拣后并入静态库")
+    ap.add_argument("--formula-font", dest="formula_font_pattern", default=None,
+                    help="追加的数学字体名正则（内置表收不全时用，如 'MyMath|XITS'）")
+    ap.add_argument("--formula-char", dest="formula_char_pattern", default=None,
+                    help="追加的「必须图像保护」字符正则（如 '[←-⇿]'）")
     ap.add_argument("--source", dest="source_lang",
                     help="源语言代码：auto(默认)/en/zh/ja/ko/de/fr/es/ru/pt/it")
     ap.add_argument("--target", dest="target_lang",
@@ -68,9 +82,14 @@ def main() -> int:
         render_backend=args.backend,
         font_path=args.font_path,
         max_pages=args.pages,
+        page_range=args.page_range,
         use_cache=(False if args.no_cache else None),
         refresh_cache=(True if args.refresh_cache else None),
         domain=args.domain,
+        auto_glossary=(False if args.no_auto_glossary else None),
+        save_glossary_path=args.save_glossary_path,
+        formula_font_pattern=args.formula_font_pattern,
+        formula_char_pattern=args.formula_char_pattern,
         source_lang=args.source_lang,
         target_lang=args.target_lang,
     )
@@ -89,6 +108,9 @@ def main() -> int:
     try:
         res = translate_document(str(in_path), str(out_path), cfg,
                                  mock=args.mock, progress=progress)
+    except PageRangeError as e:
+        print(f"\n--page-range 有误：{e}")
+        return 2
     except TranslatorError as e:
         print(f"\n翻译失败：{e}")
         return 2

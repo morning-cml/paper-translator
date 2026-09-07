@@ -153,7 +153,12 @@ def _flow(units, formulas: Dict[int, Tuple[float, float]], size: float,
     """把 units 排进 box（可避障）。返回 (items, end_y, done)。
     hard_bottom=True 时超出 box 底则停止（done=False 表示还有剩余）。"""
     x0, top, x1, bottom_max = box
-    min_w = max(24.0, 2.5 * size)
+    # 最小行宽用于"这条带子被障碍挤得太窄，跳过它继续向下"。但它**不能超过目标框
+    # 自身的宽度**——窄框（细表格列、窄块；解析层只要求块宽 ≥14pt、单元格 ≥8pt）
+    # 会因此每一行都被判过窄而整块跳过，连 hard_bottom=False 的兜底排版
+    # （本模块承诺的"宁可溢出，不丢内容"）也排不出任何一项；而写回端此时已把
+    # 原文抹除/白底覆盖 → 该块整个变成空白，内容凭空消失。
+    min_w = min(max(24.0, 2.5 * size), max(x1 - x0, 1.0))
     items: List[Item] = []
     y = top
     i = 0

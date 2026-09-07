@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Callable, List, NamedTuple, Optional
+from typing import Callable, List, NamedTuple, Optional, Sequence
 
 from .layout import (collect_avoid_rects, compute_target_box, layout_block,
                      ocr_line_shape_avoids)
-from .pdf_parser import PageLayout
+from .pdf_parser import PageLayout, Rect
 
 _ASCENT = 0.85     # 基线相对字号的近似上高（与兜底后端一致）
 _ERASE_PAD_X = 0.5
@@ -331,6 +331,244 @@ def _relink(page, links, cites, blocks, new_cites) -> None:
             pass
 
 
+# ---------------------------------------------------------------------------
+# 拼版输出的书签与链接搬迁
+# ---------------------------------------------------------------------------
+# 纯译文模式是就地改原文档，书签与链接天然还在；**三种对照模式都会丢光**：
+#   · sidebyside / updown 用 `show_pdf_page` 把整页「画」上去——那是图形操作，
+#     链接、书签、注释一概不跟随；
+#   · bilingual 用 `insert_pdf` 逐页插入，跨页跳转（正文 "[41]" → 参考文献页）
+#     因目标页不在本次插入范围内被 PyMuPDF 直接丢弃。
+# 实测（15 页论文，原文 35 条书签 / 251 条链接）：
+#     translated 35/251 ✓ ｜ bilingual 0/48 ｜ sidebyside 0/0 ｜ updown 0/0
+# ——正文引用链接 100% 消失，上一轮好不容易在 `_relink` 里抢救回来的东西，
+# 在默认输出模式（config.json 的 output_mode 就是 sidebyside）下全被扔掉。
+# 同类项目（PDFMathTranslate）把「保留目录与注释」写在功能表第一行，是对的。
+#
+# 做法：拼版时**手工搬**。链接按所属半边平移矩形、按拼版规则重映射目标页；
+# 书签按同一规则重映射页号。
+
+
+def _shifted_link(lk: dict, dx: float, dy: float, page_of) -> Optional[dict]:
+    """把一条链接搬到拼版后的新位置：矩形平移 + 跳转目标页重映射。
+
+    `to`（跳转落点）与 `from` 在 PyMuPDF 里同为**左上原点**坐标（已实测
+    round-trip 验证），故同一组 (dx, dy) 对两者都适用——前提是链接与它的
+    目标落在拼版的**同一侧**，本模块正是这么搬的：原文页上的链接跳原文侧，
+    译文页上的链接跳译文侧。
+    """
+    import fitz
+    out = dict(lk)
+    r = fitz.Rect(lk["from"])
+    out["from"] = fitz.Rect(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy)
+    if lk.get("kind") == fitz.LINK_GOTO:
+        tgt = page_of(lk.get("page", -1))
+        if tgt is None:
+            return None          # 目标页不在输出里 → 宁可不给链接，也不给错的
+        out["page"] = tgt
+        to = lk.get("to")
+        if to is not None:
+            out["to"] = fitz.Point(to.x + dx, to.y + dy)
+    # xref/id 属于源文档，留着会让 insert_link 复用错对象
+    out.pop("xref", None)
+    out.pop("id", None)
+    return out
+
+
+def _copy_links(dst_page, src_page, dx: float = 0.0, dy: float = 0.0,
+                page_of=lambda p: p) -> int:
+    n = 0
+    for lk in src_page.get_links():
+        d = _shifted_link(lk, dx, dy, page_of)
+        if d is None:
+            continue
+        try:
+            dst_page.insert_link(d)
+            n += 1
+        except Exception:  # noqa: BLE001
+            pass          # 单条链接搬不动不影响整篇
+    return n
+
+
+# ---------------------------------------------------------------------------
+# 公式回贴的取景源：一页只留公式，别把整页文字捎带进去
+# ---------------------------------------------------------------------------
+# `show_pdf_page(target, src, pno, clip=rect)` 是把**整页**塞进一个 Form
+# XObject 再加裁切路径。视觉上只露出公式那一小块，但**文字层里整页文字都在**，
+# 且被缩放平移到公式那个小框上。一页有 N 个行内公式就多 N 份整页副本。
+#
+# 实测（15 页论文第 7 页，11 个行内公式）：pdfminer 系提取器读出 13059 个词，
+# 而原文只有 1171 个——11.15 倍，坐标从 -53 一路铺到 676（页宽 594）。
+# MuPDF 系（多数阅读器）尊重裁切、只读到 135 个词，所以肉眼与主流阅读器无恙；
+# 但 pdfminer 系工具（含本项目自己的 pdfplumber 解析器、版面评测、
+# selftest 的"残留英文词"统计）看到的是一片垃圾。
+#
+# 修法：先做一份"只剩公式"的取景页——把公式区**以外**的文字整片抹掉，
+# 再从它取景。抹的是补集矩形（按公式框做带分解，O(公式数) 个矩形），
+# 一页只需一趟 redaction。图片与矢量图形一律保留（`images/graphics=NONE`），
+# 所以公式的矢量笔画毫发无损，"无限清晰、无白底"的优势不变。
+
+
+def _complement_rects(page_rect, keep) -> List[Rect]:
+    """page_rect 内、与 keep 里所有矩形都不相交的一组覆盖矩形（精确补集）。"""
+    x0, y0, x1, y1 = page_rect.x0, page_rect.y0, page_rect.x1, page_rect.y1
+    if not keep:
+        return [(x0, y0, x1, y1)]
+    ys = sorted({y0, y1} | {v for r in keep for v in (r[1], r[3])
+                if y0 < v < y1})
+    out: List[Rect] = []
+    for top, bot in zip(ys, ys[1:]):
+        if bot - top <= 0.01:
+            continue
+        band = sorted((r for r in keep if r[1] < bot and r[3] > top),
+                      key=lambda r: r[0])
+        x = x0
+        for r in band:
+            if r[0] - x > 0.01:
+                out.append((x, top, r[0], bot))
+            x = max(x, r[2])
+        if x1 - x > 0.01:
+            out.append((x, top, x1, bot))
+    return out
+
+
+class _FormulaSource:
+    """公式取景源：为每个"有公式的页"预先生成一张只剩公式的副本页。
+
+    ⚠️ **必须在任何 `show_pdf_page` 之前一次性建齐**，之后只读不改。
+    PyMuPDF 按 (目标文档, 源文档) 缓存一张 graftmap；源文档一旦被追加页面，
+    这张图就失效，后续取景直接抛
+    `FzErrorArgument: source object number out of range`——而 `_draw_page` 里
+    那句 `except Exception: pass`（本意是"单个公式贴不上不连累整页"）会把它
+    静静吞掉。实测边建边用的写法：第 1 页 38 个公式正常，第 4/6/7 页的
+    公式**全部无声消失**，页面上只剩空白。
+
+    副文档要活到 `doc.save()` 之后再关。
+    """
+
+    def __init__(self, src_doc, rects_by_page: dict):
+        import fitz
+        self._doc = fitz.open()
+        self._map: dict = {}
+        for pno in sorted(rects_by_page):
+            rects = rects_by_page[pno]
+            if not rects:
+                continue
+            try:
+                idx = len(self._doc)
+                self._doc.insert_pdf(src_doc, from_page=pno, to_page=pno,
+                                     links=False, annots=False)
+                self._strip_outside(self._doc[idx], rects)
+                self._map[pno] = idx
+            except Exception:  # noqa: BLE001
+                # 取景页建不出来不该连累公式回贴：这一页退回原始副本
+                # （文字层脏，但公式还在——两害相权取其轻）
+                self._map[pno] = None
+
+    @staticmethod
+    def _strip_outside(pg, rects: Sequence[Rect]) -> None:
+        """把公式区以外的文字整片抹掉，公式本身一个字形都不许动。
+
+        ⚠️ redaction 是**按字形整体删**的：抹除框只要碰到某个字一点点，整个字
+        就没了。所以保护区不能只取公式框——还必须把**与公式框相交的每个词的
+        整框**一并划进来。实测不这么做的后果：`(F4,314` 这个词的框比公式框略
+        往左上探出一点（fitz 的词框比 pdfplumber 的高，会探到上一行去），被
+        上一行的抹除框蹭到，于是渲染出来 `F` 和 `=` 消失、只剩下标 `4,314`。
+        """
+        import fitz
+        pad = _CLIP_PAD + 0.5          # 比取景裁剪略宽，覆盖住可见范围
+        keep = [fitz.Rect(r[0] - pad, r[1] - pad, r[2] + pad, r[3] + pad)
+                for r in rects]
+        protect: List[Rect] = [tuple(k) for k in keep]
+        try:
+            for w in pg.get_text("words"):
+                wr = fitz.Rect(w[:4])
+                if any(wr.intersects(k) for k in keep):
+                    protect.append(tuple(wr))
+        except Exception:  # noqa: BLE001
+            pass           # 拿不到词表就只按公式框保护（可能吃掉边缘字形）
+        for c in _complement_rects(pg.rect, protect):
+            rc = fitz.Rect(*c)
+            if rc.is_empty or not rc.is_valid:
+                continue
+            try:
+                pg.add_redact_annot(rc, fill=False)
+            except Exception:  # noqa: BLE001
+                pg.add_redact_annot(rc)
+        img_none = getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
+        try:
+            pg.apply_redactions(
+                images=img_none,
+                graphics=getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0))
+        except TypeError:
+            try:
+                pg.apply_redactions(images=img_none)
+            except TypeError:
+                pg.apply_redactions()
+
+    def page_for(self, src_doc, page_index: int):
+        """返回 (取景文档, 页号)。没有取景页时退回原始副本。"""
+        idx = self._map.get(page_index)
+        if idx is None:
+            return src_doc, page_index
+        return self._doc, idx
+
+    def close(self):
+        try:
+            self._doc.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _relink_stacked(out_doc, src_doc, doc, offsets) -> None:
+    """左右/上下对照：原文半边链接原样搬，译文半边整体平移 offsets[i]。
+
+    ⚠️ 必须**等所有页建完再搬**：`insert_link` 的跳转目标页要求当时就已存在，
+    边建页边插链接会让所有指向后面页的跳转被静默丢弃——而正文引用恰恰清一色
+    指向靠后的参考文献页（实测某篇论文 251 条里 160 条都指向第 13 页），
+    边建边插只剩 146 条，两遍法能拿回全部 502 条。
+    """
+    n = min(len(out_doc), len(src_doc), len(doc), len(offsets))
+
+    def same_page(p):
+        return p if 0 <= p < n else None
+
+    for i in range(n):
+        dx, dy = offsets[i]
+        _copy_links(out_doc[i], src_doc[i], 0.0, 0.0, same_page)
+        _copy_links(out_doc[i], doc[i], dx, dy, same_page)
+
+
+def _remap_toc(out_doc, src_doc, page_of) -> None:
+    """把原文书签搬到拼版后的文档（页号按 page_of 重映射）。"""
+    try:
+        toc = src_doc.get_toc(simple=True)
+    except Exception:  # noqa: BLE001
+        return
+    if not toc:
+        return
+    new, prev = [], 0
+    for item in toc:
+        lvl, title, pno = item[0], item[1], item[2]
+        # get_toc 的页号 1 起；≤0 表示这条书签本来就没有有效落点（原文里确实
+        # 存在这种，如未解析的 "Abstract" 项）。**保留标题、目标置空**，
+        # 而不是整条丢掉——"别弄丢"是这一整块的立意。
+        p = page_of(pno - 1) if pno and pno > 0 else None
+        target = -1 if p is None else p + 1
+        if p is None and pno and pno > 0:
+            continue          # 有落点但落点不在输出里（页码范围裁掉了）→ 丢
+        # set_toc 要求层级从 1 起、逐级只能 +1；丢掉中间层会被整份拒收
+        lvl = max(1, min(int(lvl), prev + 1))
+        prev = lvl
+        new.append([lvl, title, target])
+    if not new:
+        return
+    try:
+        out_doc.set_toc(new)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _redact_page(page, blocks) -> None:
     import fitz
     added = 0
@@ -363,8 +601,12 @@ def _redact_page(page, blocks) -> None:
 
 def _draw_page(page, layout: PageLayout, blocks, src_doc,
                fonts: "FontSet",
-               measures: dict, forced_sizes: Optional[dict] = None) -> None:
+               measures: dict, forced_sizes: Optional[dict] = None,
+               fsrc: "Optional[_FormulaSource]" = None) -> None:
     import fitz
+    # 公式取景源（只剩公式的副本页），没有就退回原始副本。见 _FormulaSource
+    fdoc, fpno = (fsrc.page_for(src_doc, layout.page_index)
+                  if fsrc is not None else (src_doc, layout.page_index))
     for fname, ffile in ((fonts.body_name, fonts.body_file),
                          (fonts.bold_name, fonts.bold_file)):
         try:
@@ -441,8 +683,7 @@ def _draw_page(page, layout: PageLayout, blocks, src_doc,
                 if target.is_empty or clip.is_empty:
                     continue
                 try:
-                    page.show_pdf_page(target, src_doc, layout.page_index,
-                                       clip=clip)
+                    page.show_pdf_page(target, fdoc, fpno, clip=clip)
                 except Exception:  # noqa: BLE001
                     pass  # 单个公式回贴失败不影响整页
     return new_cites
@@ -455,6 +696,7 @@ def build_output(input_path: str, output_path: str,
 
     doc = fitz.open(input_path)   # 工作文档：redact + 写中文
     src = fitz.open(input_path)   # 原始副本：公式矢量回贴来源
+    fsrc = None
 
     try:
         for page in doc:
@@ -473,6 +715,21 @@ def build_output(input_path: str, output_path: str,
         forced_sizes = _heading_start_sizes(layouts,
                                             measures[fonts.bold_file is not None])
 
+        # 公式取景源必须**在任何 show_pdf_page 之前一次性建齐**（graftmap 一旦
+        # 建立就不许再动源文档，否则后续取景会抛错并被静静吞掉），所以先把
+        # 每页要回贴的公式框收集完。
+        rects_by_page = {}
+        for layout in layouts:
+            if layout.page_index >= len(doc):
+                continue
+            rects = [(f.x0, f.top, f.x1, f.bottom)
+                     for b in layout.blocks
+                     if b.translatable and b.translation
+                     for f in b.formulas]
+            if rects:
+                rects_by_page[layout.page_index] = rects
+        fsrc = _FormulaSource(src, rects_by_page)
+
         for layout in layouts:
             if layout.page_index >= len(doc):
                 continue
@@ -485,14 +742,26 @@ def build_output(input_path: str, output_path: str,
             links, cites = _snapshot_links(page)
             _redact_page(page, blocks)
             new_cites = _draw_page(page, layout, blocks, src, fonts, measures,
-                                   forced_sizes)
+                                   forced_sizes, fsrc)
             _relink(page, links, cites, blocks, new_cites)
 
         if mode == "bilingual":
             out = fitz.open()
-            for i in range(len(doc)):
-                out.insert_pdf(src, from_page=i, to_page=i)   # 原文页
-                out.insert_pdf(doc, from_page=i, to_page=i)   # 译文页
+            n = len(doc)
+            for i in range(n):
+                # links=False：逐页插入时 PyMuPDF 只留页内链接、丢掉全部跨页
+                # 跳转（引用 → 参考文献页恰恰都是跨页的）。索性全部关掉，
+                # 下面按拼版规则统一重插。annots 保留（高亮/批注不受影响）。
+                out.insert_pdf(src, from_page=i, to_page=i, links=False)  # 原文页
+                out.insert_pdf(doc, from_page=i, to_page=i, links=False)  # 译文页
+            # 页序：原文 i → 2i，译文 i → 2i+1。原文页的链接跳原文侧，
+            # 译文页的链接跳译文侧，读者始终留在自己那一路。
+            for i in range(n):
+                _copy_links(out[2 * i], src[i],
+                            page_of=lambda p: 2 * p if 0 <= p < n else None)
+                _copy_links(out[2 * i + 1], doc[i],
+                            page_of=lambda p: 2 * p + 1 if 0 <= p < n else None)
+            _remap_toc(out, src, lambda p: 2 * p if 0 <= p < n else None)
             _subset_fonts(out)
             out.save(output_path, garbage=3, deflate=True)
             out.close()
@@ -502,6 +771,7 @@ def build_output(input_path: str, output_path: str,
             # 缩到单页的一半（实测 1.47× vs 2.94×），字小到看不清，而这是它的
             # 物理上限、调不动。上下拼保持页宽不变，适合宽度下就是 100%。
             out = fitz.open()
+            offsets = []
             for i in range(len(doc)):
                 r = src[i].rect
                 w, h = r.width, r.height
@@ -510,12 +780,16 @@ def build_output(input_path: str, output_path: str,
                 page.show_pdf_page(fitz.Rect(0, h, w, 2 * h), doc, i)      # 下：译文
                 page.draw_line(fitz.Point(0, h), fitz.Point(w, h),
                                color=(0.8, 0.8, 0.8), width=0.7)
+                offsets.append((0.0, h))
+            _relink_stacked(out, src, doc, offsets)
+            _remap_toc(out, src, lambda p: p)
             _subset_fonts(out)
             out.save(output_path, garbage=3, deflate=True)
             out.close()
         elif mode == "sidebyside":
             # T4 左右对照：2W×H 宽页，左原文右译文，中缝细分隔线
             out = fitz.open()
+            offsets = []
             for i in range(len(doc)):
                 r = src[i].rect
                 w, h = r.width, r.height
@@ -524,6 +798,9 @@ def build_output(input_path: str, output_path: str,
                 page.show_pdf_page(fitz.Rect(w, 0, 2 * w, h), doc, i)
                 page.draw_line(fitz.Point(w, 0), fitz.Point(w, h),
                                color=(0.8, 0.8, 0.8), width=0.7)
+                offsets.append((w, 0.0))
+            _relink_stacked(out, src, doc, offsets)
+            _remap_toc(out, src, lambda p: p)
             _subset_fonts(out)
             out.save(output_path, garbage=3, deflate=True)
             out.close()
@@ -533,6 +810,8 @@ def build_output(input_path: str, output_path: str,
     finally:
         doc.close()
         src.close()
+        if fsrc is not None:
+            fsrc.close()
 
 
 def _subset_fonts(doc) -> None:

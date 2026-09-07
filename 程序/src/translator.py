@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -62,6 +63,13 @@ class BaseTranslator:
     def _persist_key(self, text: str) -> str:
         from .transcache import TransCache
         return TransCache.make_key(self.cache_scope, text)
+
+    # 子类若能一次性译出术语表则置 True（Mock 与纯本地实现不支持）
+    supports_terms = False
+
+    def translate_terms(self, terms: List[str]) -> dict:
+        """把「本文术语表」一次性译出，返回 {英文小写: 译文}。默认不支持。"""
+        return {}
 
     # 子类可实现「占位符丢失后的强化重试」；返回 None 表示不支持
     def _translate_strict(self, text: str, glossary_block: str) -> Optional[str]:
@@ -304,15 +312,24 @@ class DeepSeekTranslator(BaseTranslator):
             "thinking": {"type": "enabled" if self.thinking else "disabled"},
         }
         last_err = None
-        for attempt in range(self.max_retries):
+        attempt = 0
+        while attempt < self.max_retries:
             try:
                 resp = self.session.post(url, headers=headers, json=payload,
                                          timeout=self.timeout, verify=self.verify_ssl)
                 if resp.status_code == 200:
                     return resp.json()["choices"][0]["message"]["content"]
                 # 兼容非 DeepSeek 服务（Kimi/GLM/豆包/OpenAI/Ollama…）：
-                # "thinking" 是 DeepSeek 风格参数，严格校验的服务会报 400，
+                # "thinking" 是 DeepSeek 风格参数，严格校验的服务会报 400
+                # （OpenAI 明确回 "Unrecognized request argument supplied: thinking"），
                 # 去掉该字段立刻重试一次。
+                #
+                # ⚠️ 这次重试**不计入重试次数**。计入的话，联通性预检（用的是
+                # max_retries=1）会把仅有的一次机会花在注定被拒的首个请求上，
+                # 剥掉字段后的重试根本发不出去 → 预检必然失败在"翻译请求失败。"
+                # 上。而预检是翻译的强制闸门，等于整个工具对所有严格校验参数的
+                # 服务（OpenAI 等）完全不可用。
+                # 本分支至多触发一次：剥掉字段后条件不再成立，不会死循环。
                 if resp.status_code == 400 and "thinking" in payload:
                     payload = {k: v for k, v in payload.items() if k != "thinking"}
                     continue
@@ -331,7 +348,9 @@ class DeepSeekTranslator(BaseTranslator):
                     f"（原始错误：{e}）")
             except requests.RequestException as e:
                 last_err = TranslatorError(f"网络请求失败：{e}")
-            time.sleep(2 ** attempt)  # 指数退避
+            attempt += 1
+            if attempt < self.max_retries:
+                time.sleep(2 ** (attempt - 1))  # 指数退避；最后一次失败不再空等
         raise last_err or TranslatorError("翻译请求失败。")
 
     # ---- 批量翻译 ----
@@ -371,6 +390,58 @@ class DeepSeekTranslator(BaseTranslator):
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": instruction},
         ]).strip()
+
+    # ---- 本文术语表：一次调用译出，全篇共用 ----
+    supports_terms = True
+    _TERMS_TAG = "\x00doc-glossary\x00"
+
+    def translate_terms(self, terms: List[str]) -> dict:
+        """把抽取出的本文术语一次性译出，返回 {英文小写: 译文}。
+
+        全篇只发**一次**请求，结果进持久缓存（键含术语表本身），所以重跑同一篇
+        文档零额外开销。译不出或对不上号的条目直接丢弃——术语表宁缺毋滥，
+        塞一条错译进提示词会让全篇跟着错。
+        """
+        if not terms:
+            return {}
+        key = self._persist_key(self._TERMS_TAG + "\n".join(terms))
+        if self.persist is not None and not self.cache_refresh:
+            hit = self.persist.get(key)
+            if hit:
+                try:
+                    cached = json.loads(hit)
+                    if isinstance(cached, dict):
+                        return cached
+                except Exception:  # noqa: BLE001
+                    pass          # 缓存坏了就重新译，不让它拖垮翻译
+        numbered = "\n".join(f"[[{i + 1}]] {t}" for i, t in enumerate(terms))
+        instruction = (
+            f"下面是同一篇文档里反复出现的 {len(terms)} 个关键术语，每行前有 "
+            f"[[序号]]。请给出每个术语在本文语境下最恰当的"
+            f"{self.target_name}译名，按相同编号逐行输出，格式：\n"
+            "[[1]] 译名\n[[2]] 译名\n"
+            "只输出译名本身，不要解释、不要重复原文。"
+            "已成惯例的缩写（CNN、GPU 等）若本就不必翻译，原样输出即可。\n\n"
+            + numbered)
+        content = self._chat([
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": instruction},
+        ])
+        parsed = {int(i): t.strip() for i, t in _MARKER.findall(content)}
+        from .languages import is_translated
+        out: dict = {}
+        for i, term in enumerate(terms):
+            zh = parsed.get(i + 1, "").strip()
+            # 一行一条，多行说明八成是模型跑题了；且必须真的译成了目标语
+            if not zh or "\n" in zh or len(zh) > 40:
+                continue
+            if not is_translated(term, zh, self.target_code):
+                continue
+            out[term.lower()] = zh
+        if out and self.persist is not None:
+            self.persist.put(key, json.dumps(out, ensure_ascii=False))
+            self.persist.flush()
+        return out
 
     def _translate_fix(self, text: str, problem: str,
                        glossary_block: str) -> Optional[str]:

@@ -108,3 +108,125 @@ def test_no_citation_in_translation_drops_link(linked_pdf, tmp_path):
                     if l.get("kind") == fitz.LINK_GOTO and l.get("page") == 1]
     finally:
         doc.close()
+
+
+# --- 拼版模式下书签与链接必须跟着搬 -------------------------------------------
+
+@pytest.fixture
+def booked_pdf(tmp_path):
+    """三页 PDF：第 1 页两条链接（一条指向第 3 页，一条页内），带 3 条书签。"""
+    path = tmp_path / "booked.pdf"
+    doc = fitz.open()
+    for _ in range(3):
+        doc.new_page(width=300, height=200)
+    doc[0].insert_text((50, 100), "See [41] for details.", fontsize=10)
+    doc[0].insert_link({"kind": fitz.LINK_GOTO, "from": fitz.Rect(70, 90, 90, 103),
+                        "page": 2, "to": fitz.Point(50, 60)})
+    doc[0].insert_link({"kind": fitz.LINK_URI, "from": fitz.Rect(10, 10, 40, 20),
+                        "uri": "https://example.com"})
+    doc.set_toc([[1, "Intro", 1], [1, "Method", 2], [2, "Detail", 3]])
+    doc.save(str(path))
+    doc.close()
+    return str(path)
+
+
+def _layouts_for(n: int):
+    from src.pdf_parser import PageLayout
+    b = Block(text="See [41] for details.", x0=50.0, top=90.0, x1=250.0,
+              bottom=103.0, size=10.0, page_index=0, translatable=True,
+              translation="详见 [41] 的说明。", line_rects=[(50.0, 90.0, 250.0, 103.0)])
+    return [PageLayout(page_index=i, width=300.0, height=200.0,
+                       blocks=[b] if i == 0 else []) for i in range(n)]
+
+
+@pytest.mark.parametrize("mode", ["translated", "bilingual", "sidebyside", "updown"])
+def test_outline_survives_every_output_mode(booked_pdf, tmp_path, mode):
+    """回归 2026-09-07：目录（书签）原先只在纯译文模式下幸存。
+
+    对照模式全军覆没——`show_pdf_page` 是图形操作、书签不跟随，`insert_pdf`
+    逐页插入也不带 TOC。实测 15 页论文：原文 35 条书签，bilingual /
+    sidebyside / updown 三种模式**一条不剩**。同类项目（PDFMathTranslate）
+    把「保留目录与注释」写在功能表第一行。
+    """
+    out = tmp_path / f"o_{mode}.pdf"
+    build_output(booked_pdf, str(out), _layouts_for(3), mode)
+    doc = fitz.open(str(out))
+    try:
+        titles = [t[1] for t in doc.get_toc()]
+        assert titles == ["Intro", "Method", "Detail"], f"{mode} 模式书签丢失"
+    finally:
+        doc.close()
+
+
+@pytest.mark.parametrize("mode", ["bilingual", "sidebyside", "updown"])
+def test_cross_page_links_survive_layout_modes(booked_pdf, tmp_path, mode):
+    """跨页跳转（正文引用 → 参考文献页）在对照模式下必须还在。
+
+    回归 2026-09-07：`bilingual` 逐页 `insert_pdf`，目标页不在本次插入范围内
+    的链接被 PyMuPDF 丢弃；`sidebyside`/`updown` 用 `show_pdf_page` 连页内
+    链接都不剩。实测 15 页论文 251 条链接 → 48 / 0 / 0，而其中 160 条正是
+    正文引用指向参考文献页的跳转。
+    """
+    out = tmp_path / f"x_{mode}.pdf"
+    build_output(booked_pdf, str(out), _layouts_for(3), mode)
+    doc = fitz.open(str(out))
+    try:
+        goto = [l for p in doc for l in p.get_links()
+                if l.get("kind") == fitz.LINK_GOTO and l.get("page", -1) >= 0]
+        assert goto, f"{mode} 模式跨页跳转链接全部丢失"
+        uri = [l for p in doc for l in p.get_links()
+               if l.get("kind") == fitz.LINK_URI]
+        assert uri, f"{mode} 模式外部链接丢失"
+        for l in goto:
+            assert 0 <= l["page"] < len(doc), "跳转目标页越界"
+    finally:
+        doc.close()
+
+
+def test_sidebyside_translated_half_links_are_shifted(booked_pdf, tmp_path):
+    """左右对照：右半（译文）的链接必须整体右移一个页宽，不能压在左半上。"""
+    out = tmp_path / "sbs.pdf"
+    build_output(booked_pdf, str(out), _layouts_for(3), "sidebyside")
+    doc = fitz.open(str(out))
+    try:
+        half = doc[0].rect.width / 2
+        xs = [fitz.Rect(l["from"]).x0 for l in doc[0].get_links()]
+        assert any(x < half for x in xs), "左半（原文）应有链接"
+        assert any(x >= half for x in xs), "右半（译文）应有链接——没有说明没搬过去"
+    finally:
+        doc.close()
+
+
+def test_updown_translated_half_links_are_shifted(booked_pdf, tmp_path):
+    """上下对照：下半（译文）的链接必须整体下移一个页高。"""
+    out = tmp_path / "ud.pdf"
+    build_output(booked_pdf, str(out), _layouts_for(3), "updown")
+    doc = fitz.open(str(out))
+    try:
+        half = doc[0].rect.height / 2
+        ys = [fitz.Rect(l["from"]).y0 for l in doc[0].get_links()]
+        assert any(y < half for y in ys), "上半（原文）应有链接"
+        assert any(y >= half for y in ys), "下半（译文）应有链接"
+    finally:
+        doc.close()
+
+
+def test_bilingual_keeps_reader_on_their_own_side(booked_pdf, tmp_path):
+    """双语前后页：页序为 原0,译0,原1,译1…
+
+    原文页上的跳转要落到目标页的**原文页**（偶数），译文页上的落到**译文页**
+    （奇数）——读者点一下不该被甩到另一路去。
+    """
+    out = tmp_path / "bi.pdf"
+    build_output(booked_pdf, str(out), _layouts_for(3), "bilingual")
+    doc = fitz.open(str(out))
+    try:
+        assert len(doc) == 6
+        for p in doc:
+            for l in p.get_links():
+                if l.get("kind") != fitz.LINK_GOTO or l.get("page", -1) < 0:
+                    continue
+                assert l["page"] % 2 == p.number % 2, (
+                    f"第 {p.number} 页的跳转落到了另一侧（目标 {l['page']}）")
+    finally:
+        doc.close()

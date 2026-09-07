@@ -48,8 +48,22 @@ DEFAULTS = {
     "refresh_cache": False,
     # 学科领域：影响翻译提示词口径（计算机科学/通用学术/生物医学/物理学…）
     "domain": "计算机科学",
+    # 本文术语表：译前自动抽取全文高频术语、一次性译出并全篇统一（对齐 BabelDOC）。
+    # 只多花一次请求且进缓存；关掉则完全沿用静态 CSV 术语库。
+    "auto_glossary": True,
+    "auto_glossary_limit": 30,     # 最多抽多少条
+    # 非空则把自动抽取的术语表导出成同格式 CSV，便于人工挑拣后并进静态库
+    "save_glossary_path": "",
     # 试译页数：0=翻译整篇；N=只翻译前 N 页（其余页保留原文，便宜预览）
     "max_pages": 0,
+    # 页码范围（1 起）："1-3,5,8-"。非空则**优先于 max_pages**；用于只翻指定
+    # 章节，或把大文档分批翻（先 1-50 再 51-100，已译段走缓存不重复计费）
+    "page_range": "",
+    # 公式检测的**追加**规则（正则，只加不减，内置表照旧）：
+    # font=字体名里出现即当数学字体；char=该字符必须整块图像保护、不参与重排。
+    # 排版千奇百怪，内置表收不全时不必改源码。留空即完全沿用内置行为。
+    "formula_font_pattern": "",
+    "formula_char_pattern": "",
     # 计费单价（元/百万 token，用于翻译前成本预估显示；0=只显示 token 数）
     "price_in": 0.0,
     "price_out": 0.0,
@@ -77,7 +91,13 @@ class Config:
     use_cache: bool = True
     refresh_cache: bool = False
     domain: str = "计算机科学"
+    auto_glossary: bool = True
+    auto_glossary_limit: int = 30
+    save_glossary_path: str = ""
     max_pages: int = 0
+    page_range: str = ""
+    formula_font_pattern: str = ""
+    formula_char_pattern: str = ""
     price_in: float = 0.0
     price_out: float = 0.0
 

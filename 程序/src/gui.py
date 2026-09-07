@@ -28,7 +28,8 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from .config import load_config, save_config
-from .pipeline import translate_pdf, check_connection, CancelledError
+from .pipeline import (translate_pdf, check_connection, CancelledError,
+                       output_suffix)
 from .translator import TranslatorError
 
 MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"]
@@ -338,9 +339,10 @@ class App:
 
     def _out_path(self, f):
         stem = Path(f).stem
-        suffix = {"bilingual": "_translation_bilingual",
-                  "sidebyside": "_translation_sidebyside"}.get(
-            self.mode_var.get(), "_translation")
+        # 后缀规则与网页版/CLI 共用同一处（pipeline.output_suffix）。本地那份
+        # 硬编码的表漏了 "updown"——而 output_mode 是从 config.json 读来的，
+        # 用户在网页版选过上下对照后再开经典界面，文件名就会错标成纯译文。
+        suffix = output_suffix(self.mode_var.get(), ".pdf")
         base = Path(f).parent if self.outloc_var.get() == "same" else Path(self.outdir_var.get())
         return str(base / (stem + suffix + ".pdf"))
 
@@ -411,6 +413,11 @@ class App:
 
                     res = translate_pdf(f, out, cfg, mock=mock, progress=prog,
                                         should_cancel=self.cancel_event.is_set)
+                    # 以流水线**实际落位**的路径为准：目标文件被 PDF 阅读器占用
+                    # 时，atomic_output 会自动改名成 "X (1).pdf" 保住成果。记成
+                    # 请求路径的话，日志、完成弹窗、"打开 PDF" 指的都是一个不存在
+                    # 或过期的文件。
+                    out = res.get("output") or out
                     outs.append(out)
                     self.q.put(("log",
                                 f"[{i+1}/{n}] 完成：{Path(out).name}"

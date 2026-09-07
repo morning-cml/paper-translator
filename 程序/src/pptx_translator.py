@@ -106,7 +106,7 @@ def translate_pptx(
 
     from .glossary import Glossary
     from .pipeline import (CancelledError, _estimate_line, _maybe_pangu,
-                           _translated, make_translator)
+                           _translated, build_doc_glossary, make_translator)
 
     def report(msg: str, frac: float):
         if progress:
@@ -132,6 +132,7 @@ def translate_pptx(
         body = next((t for t in texts if len(t) > 200), "")
         ctx = head + (("\n摘要节选：" + body[:250]) if body else "")
         translator = make_translator(cfg, mock=mock, doc_context=ctx)
+    glossary = build_doc_glossary(translator, texts, glossary, cfg, report)
     if texts and not mock:
         try:
             report(_estimate_line(translator, texts, cfg), 0.09)

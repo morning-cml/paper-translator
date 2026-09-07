@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import re
 import statistics
 from dataclasses import dataclass, field
@@ -210,7 +211,54 @@ _HARD_RANGES = (
 )
 
 
+# ---------------------------------------------------------------------------
+# 公式检测规则的可配置扩展
+# ---------------------------------------------------------------------------
+# 上面那两张表（数学字体名、需图像保护的字符区间）是照着常见 TeX/Word 排版
+# 攒出来的，遇到没收录的字体或符号就只能改源码——而排版千奇百怪，改源码这条
+# 路对打包版用户等于没有。同类工具（BabelDOC）为此开了
+# `--formular-font-pattern` / `--formular-char-pattern` 两个口子，这里对齐：
+# 用户在 config.json 或命令行给两条正则，**追加**到内置规则之上（只加不减，
+# 内置行为一字不动）。
+#
+# 线程安全说明：解析是单线程逐页跑的，用模块级状态 + 上下文管理器最省事；
+# 进出都由 `formula_rules()` 兜住，异常也会还原。
+
+_EXTRA_FONT_RE: Optional["re.Pattern"] = None
+_EXTRA_CHAR_RE: Optional["re.Pattern"] = None
+
+
+@contextlib.contextmanager
+def formula_rules(font_pattern: str = "", char_pattern: str = ""):
+    """在本上下文内追加公式检测规则；写错的正则直接忽略（不该让解析崩掉）。"""
+    global _EXTRA_FONT_RE, _EXTRA_CHAR_RE
+    old = (_EXTRA_FONT_RE, _EXTRA_CHAR_RE)
+
+    def compile_or_none(pat):
+        if not pat:
+            return None
+        try:
+            return re.compile(pat, re.IGNORECASE)
+        except re.error as e:  # noqa: PERF203
+            print(f"[parser] 公式规则正则无效，已忽略：{pat!r}（{e}）")
+            return None
+
+    _EXTRA_FONT_RE = compile_or_none(font_pattern)
+    _EXTRA_CHAR_RE = compile_or_none(char_pattern)
+    try:
+        yield
+    finally:
+        _EXTRA_FONT_RE, _EXTRA_CHAR_RE = old
+
+
+def _is_math_font(fontname: str) -> bool:
+    return bool(_MATH_FONT.search(fontname)
+                or (_EXTRA_FONT_RE is not None and _EXTRA_FONT_RE.search(fontname)))
+
+
 def _is_hard_char(ch: str) -> bool:
+    if _EXTRA_CHAR_RE is not None and _EXTRA_CHAR_RE.match(ch):
+        return True     # 用户点名的字符优先，连内置豁免表也压过
     if ch in _SAFE_MATH_CHARS:
         return False
     o = ord(ch)
@@ -236,7 +284,7 @@ def _classify_word(w, line_size: float, line_center_y: float) -> str:
     # 高型 glyph（积分号、大括号、根号等）；纯字母数字除外（避免误伤首字下沉）
     if h > 1.6 * line_size and line_size > 0 and not t.isalnum():
         return "strong"
-    if _MATH_FONT.search(fn.split("+")[-1]):
+    if _is_math_font(fn.split("+")[-1]):
         return "weak"
     # 单/双字母斜体变量（n, P, xi …）
     if _ITALIC_FONT.search(fn):
@@ -909,8 +957,18 @@ def _promote_full_tails(full: list, side: list) -> None:
                     break
 
 
-def parse_pdf(path: str, progress=None) -> List[PageLayout]:
-    """解析整份 PDF。progress(msg, frac) 可选——OCR 扫描页较慢，逐页上报。"""
+def parse_pdf(path: str, progress=None, formula_font_pattern: str = "",
+              formula_char_pattern: str = "") -> List[PageLayout]:
+    """解析整份 PDF。progress(msg, frac) 可选——OCR 扫描页较慢，逐页上报。
+
+    formula_font_pattern / formula_char_pattern：追加的公式检测规则（正则，
+    见 `formula_rules`）。留空即完全沿用内置表，行为一字不变。
+    """
+    with formula_rules(formula_font_pattern, formula_char_pattern):
+        return _parse_pdf(path, progress)
+
+
+def _parse_pdf(path: str, progress=None) -> List[PageLayout]:
     from . import layout_model as _lm
     from . import ocr as _ocr
 

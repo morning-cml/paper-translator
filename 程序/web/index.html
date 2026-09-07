@@ -104,6 +104,9 @@
       <label>试译前 N 页 <small>(0=整篇)</small>
         <input type="number" id="s-trial" min="0" max="999" value="0">
       </label>
+      <label>指定页码 <small>(留空=不限；填了则忽略左侧)</small>
+        <input id="s-page-range" placeholder="如 1-3,5,8-">
+      </label>
       <label class="wide">术语库 CSV
         <span class="key-row">
           <input id="s-glossary" placeholder="glossary/cs_terms.csv">
@@ -141,6 +144,7 @@
         <label class="check"><input type="checkbox" id="s-direct"> 直连（SSL 报错时勾选）</label>
         <label class="check"><input type="checkbox" id="s-mock"> 离线测试（不花钱看排版）</label>
         <label class="check"><input type="checkbox" id="s-refresh"> 忽略缓存重新翻译（上次结果不对时勾选）</label>
+        <label class="check"><input type="checkbox" id="s-auto-glossary" checked> 本文术语表（抽取全文高频术语，全篇统一译名）</label>
       </div>
     </details>
   </section>
