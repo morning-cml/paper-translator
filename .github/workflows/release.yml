@@ -29,9 +29,9 @@ jobs:
       run:
         working-directory: 程序
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -58,9 +58,9 @@ jobs:
       run:
         working-directory: 程序
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
           cache: pip
@@ -83,7 +83,7 @@ jobs:
           "zip=$($zip.FullName)" >> $env:GITHUB_OUTPUT
 
       - name: 上传构建产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.profile }}-${{ runner.os }}-${{ runner.arch }}
           path: ${{ steps.find.outputs.zip }}
@@ -93,12 +93,12 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
 
       - name: 发布到 Releases
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/**/*.zip
           generate_release_notes: true
