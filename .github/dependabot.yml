@@ -1,0 +1,32 @@
+# Dependabot：自动盯着 GitHub Actions 的版本
+#
+# 起因（2026-09-07）：发 v1.4.0 时 CI 日志报出 6 条告警——checkout@v4 /
+# setup-python@v5 / upload-artifact@v4 / download-artifact@v4 /
+# action-gh-release@v2 全都还是 Node 20 目标，正被运行器强制跑在 Node 24 上。
+# 当时不影响构建，但 GitHub 会逐步停掉这种兼容。真正麻烦的是 release.yml
+# **只在打 tag 时才跑**——它坏了要等到下次发版当场才发现，而那时人正等着出包。
+# 与其靠人盯，不如让 Dependabot 定期开 PR 提醒。
+#
+# 为什么这条特别值：PR 会自动触发 test.yml（它监听 pull_request → main），
+# 于是"升级 + 验证"一次做完，合之前就知道跑不跑得通。Dependabot 的 PR 拿不到
+# 仓库 secrets，而本项目的测试本来就不需要任何密钥（用 MockTranslator 离线跑），
+# 不受影响。
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"                    # github-actions 生态固定看 .github/workflows/
+    schedule:
+      interval: "monthly"             # action 更新不频繁，按月足够，避免噪音
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: "ci"                    # 与本仓库的提交前缀约定一致
+    groups:
+      # 全部 action 合成**一个** PR。分成五个 PR 意味着要合五次、跑五轮 CI，
+      # 而它们本来就该一起升（同一批 Node 运行时迁移）。
+      actions:
+        patterns: ["*"]
+
+# 没有配 pip 生态是有意的：本项目对依赖有硬约束（AGPL 兼容性、
+# 新引入依赖前先核许可，见 程序/docs/第三方许可.md），且 pymupdf / onnxruntime
+# 这类的版本跳动会直接影响版面输出与打包体积，不适合自动升。
+# 要开的话在此加一段 package-ecosystem: "pip"，directory 指到 /程序。

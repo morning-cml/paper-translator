@@ -11,6 +11,36 @@
 
 ---
 
+## [未发布] · CI 运行时升级 + Dependabot 看着
+
+发 v1.4.0 时 CI 日志报出 6 条告警：`checkout@v4` / `setup-python@v5` /
+`upload-artifact@v4` / `download-artifact@v4` / `action-gh-release@v2` 全都还是
+Node 20 目标，正被运行器强制跑在 Node 24 上。当时不影响构建，但这种兼容会被
+逐步停掉——真正麻烦的是 **release.yml 只在打 tag 时才跑**，它坏了要等到下次
+发版当场才发现，而那时人正等着出包。
+
+- **升到 Node 24 运行时**：checkout v4→v7、setup-python v5→v7、
+  upload-artifact v4→v7、download-artifact v4→v8、action-gh-release v2→v3。
+  逐个核过大版本发布说明，没有影响本项目用法的破坏性改动：
+  download-artifact v5 的 BREAKING 只针对"按 ID 下载单个产物"的路径行为
+  （我们是不带 name 下载全部）；v8 改为按 Content-Type 判断是否解压，而我们的
+  产物走 upload-artifact 默认的 `archive: true`（仍是 zip 容器），
+  `files: dist/**/*.zip` 的匹配不变。共同前提 runner ≥ v2.327.1，
+  本项目只用 GitHub 托管 runner，已满足。
+  **验证**：用 release.yml 自带的 `workflow_dispatch`（"只构建、不发布"）在分支上
+  跑通 test + Windows/macOS × full/lite 四档构建，`release` 作业按
+  `if: startsWith(github.ref, 'refs/tags/')` 正确跳过；告警 6 条 → **0 条**。
+  ⚠️ `release` 作业里的 download-artifact 与 action-gh-release 只在打 tag 时执行，
+  dispatch 验证不到，要到下次发版才第一次真跑。
+
+- **新增 `.github/dependabot.yml`**：按月盯 GitHub Actions 版本，五个 action
+  合成一个 PR（它们本就该一起升）。PR 会自动触发 `test.yml`（它监听
+  `pull_request` → main），于是"升级 + 验证"一次做完。故意没配 pip 生态——
+  本项目对依赖有硬约束（AGPL 兼容性、新引入依赖前先核许可），且
+  pymupdf / onnxruntime 的版本跳动会直接影响版面输出与打包体积，不适合自动升。
+
+---
+
 ## [1.4.0] — 2026-09-07 · 保住目录与链接 + 本文术语表 + 版面保真可量化
 
 > 版本号 1.3.0 → **1.4.0**：新增了版面保真评测（`src/metrics.py`）、本文术语表、
