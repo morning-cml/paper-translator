@@ -20,7 +20,7 @@
 py -m pip install -r requirements.txt     # 依赖（含 OCR/DOCX；文件对话框用自带 tkinter）
 py webui.py                               # 【正式】原生应用窗口（pywebview）
 py webui.py --browser                     # 同一界面，改用系统浏览器（调试用）
-py -m pytest tests -q                     # 测试套件（372 项）
+py -m pytest tests -q                     # 测试套件（381 项）
 py run_gui.py                             # 备用 tkinter 界面（已冻结，勿加新功能）
 py translate_cli.py "论文.pdf" --mock     # 离线跑通版式（不花 token）
 py translate_cli.py "论文.pdf" --pages 2  # 真实试译前 2 页

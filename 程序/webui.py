@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import socket
 import sys
 import threading
@@ -109,34 +110,107 @@ def _run_job(job_id: str, files: list, overrides: dict, mock: bool,
         job["log"].append(traceback.format_exc(limit=3))
 
 
+# ---------------------------------------------------------------------------
+# 本机选择框
+# ---------------------------------------------------------------------------
+# 浏览器拿不到本地路径，所以选择框由服务端弹。难点在**线程**：HTTP 请求在
+# 工作线程里处理，而 macOS 规定窗口只能在主线程创建——在工作线程里 tk.Tk()
+# 一碰输入法系统（TSM）就触发线程检查、整个程序闪退（Issue #2/#3：Mac 上
+# 点"选择文件"即闪退）。Windows 不管这个，所以一直没暴露。
+#
+# 于是按运行方式分三路，保证对话框永远在主线程弹出：
+#   · 应用窗口模式（pywebview，主线程被它的事件循环占着）+ macOS
+#       → 用 pywebview 自带的原生对话框，它内部会派发到主线程并等结果；
+#   · 浏览器模式（主线程空闲）→ 交给主线程代办（_MAIN_CALLS 队列）；
+#   · 其余（Windows 应用窗口模式）→ 照旧在当前线程弹 tkinter，实测无碍。
+
+_WINDOW = None                 # pywebview 窗口；应用窗口模式下由 main() 设置
+_MAIN_CALLS: "queue.Queue | None" = None   # 浏览器模式下由主线程消费
+
+_DOC_TYPES = "*.pdf;*.docx;*.pptx;*.md;*.markdown;*.txt;*.srt"
+
+
 def _pick(kind: str = "pdf") -> list:
-    """本机选择框（串行化调用；浏览器无法提供本地路径，故由服务端弹窗）。
-    kind: pdf=多选 PDF；csv=单选术语库；dir=选文件夹。"""
+    """弹本机选择框（串行化）。kind: pdf=多选文档；csv=单选术语库；dir=选文件夹。"""
     with PICK_LOCK:
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
+        if _WINDOW is not None and sys.platform == "darwin":
+            return _pick_webview(kind)
+        if _MAIN_CALLS is not None:
+            return _on_main_thread(lambda: _pick_tk(kind))
+        return _pick_tk(kind)
+
+
+def _pick_webview(kind: str) -> list:
+    import webview
+    fd = getattr(webview, "FileDialog", None)          # pywebview ≥5.4 的新写法
+    open_t = fd.OPEN if fd else webview.OPEN_DIALOG
+    folder_t = fd.FOLDER if fd else webview.FOLDER_DIALOG
+    if kind == "dir":
+        r = _WINDOW.create_file_dialog(folder_t)
+    elif kind == "csv":
+        r = _WINDOW.create_file_dialog(open_t, file_types=("CSV (*.csv)",))
+    else:
+        r = _WINDOW.create_file_dialog(
+            open_t, allow_multiple=True,
+            file_types=(f"支持的文档 ({_DOC_TYPES})", "所有文件 (*.*)"))
+    if not r:
+        return []
+    return [str(r)] if isinstance(r, str) else [str(p) for p in r]
+
+
+def _pick_tk(kind: str) -> list:
+    if sys.platform == "darwin" and threading.current_thread() is not threading.main_thread():
+        # 兜底：宁可报错也不能让整个程序闪退
+        raise RuntimeError("macOS 上选择框只能在主线程弹出")
+    import tkinter as tk
+    from tkinter import filedialog
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        if kind == "csv":
+            p = filedialog.askopenfilename(
+                title="选择术语库 CSV", filetypes=[("CSV", "*.csv")])
+            return [p] if p else []
+        if kind == "dir":
+            d = filedialog.askdirectory(title="选择输出文件夹")
+            return [d] if d else []
+        paths = filedialog.askopenfilenames(
+            title="选择要翻译的文档",
+            filetypes=[("支持的文档", _DOC_TYPES),
+                       ("PDF", "*.pdf"), ("Word 文档", "*.docx"),
+                       ("PowerPoint", "*.pptx"),
+                       ("Markdown", "*.md;*.markdown"),
+                       ("纯文本", "*.txt"), ("字幕", "*.srt")])
+        return [str(p) for p in paths]
+    finally:
+        root.destroy()
+
+
+def _on_main_thread(fn):
+    """把 fn 交给主线程执行并等结果（主线程在 _serve_main_calls 里消费）。"""
+    done = threading.Event()
+    box: dict = {}
+    _MAIN_CALLS.put((fn, done, box))
+    done.wait()
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
+def _serve_main_calls(calls: "queue.Queue", stop: "threading.Event | None" = None):
+    """主线程循环：逐个执行别的线程托付的 GUI 调用。stop 仅供测试收尾。"""
+    while stop is None or not stop.is_set():
         try:
-            if kind == "csv":
-                p = filedialog.askopenfilename(
-                    title="选择术语库 CSV", filetypes=[("CSV", "*.csv")])
-                return [p] if p else []
-            if kind == "dir":
-                d = filedialog.askdirectory(title="选择输出文件夹")
-                return [d] if d else []
-            paths = filedialog.askopenfilenames(
-                title="选择要翻译的文档",
-                filetypes=[("支持的文档",
-                            "*.pdf;*.docx;*.pptx;*.md;*.markdown;*.txt;*.srt"),
-                           ("PDF", "*.pdf"), ("Word 文档", "*.docx"),
-                           ("PowerPoint", "*.pptx"),
-                           ("Markdown", "*.md;*.markdown"),
-                           ("纯文本", "*.txt"), ("字幕", "*.srt")])
-            return [str(p) for p in paths]
+            fn, done, box = calls.get(timeout=0.5)   # 短超时：Ctrl+C 能及时生效
+        except queue.Empty:
+            continue
+        try:
+            box["result"] = fn()
+        except Exception as e:  # noqa: BLE001 — 原样转交给请求方
+            box["error"] = e
         finally:
-            root.destroy()
+            done.set()
 
 
 def _produced_file(path: str):
@@ -356,15 +430,17 @@ def main(app_window: bool = True):
     url = f"http://127.0.0.1:{port}/"
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
+    global _WINDOW, _MAIN_CALLS
     if app_window:
         try:
             import webview
             print("  正在打开应用窗口……（关闭窗口即退出）")
-            webview.create_window("论文翻译工具", url, width=1080, height=860,
-                                  min_size=(820, 640))
+            _WINDOW = webview.create_window("论文翻译工具", url, width=1080,
+                                            height=860, min_size=(820, 640))
             webview.start()          # 阻塞至窗口关闭
             return
         except Exception as e:  # noqa: BLE001
+            _WINDOW = None
             print(f"  [i] 应用窗口不可用（{e}），改用系统浏览器。")
 
     print("=" * 52)
@@ -373,9 +449,10 @@ def main(app_window: bool = True):
     print("  关闭本窗口即退出程序。")
     print("=" * 52)
     threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    # 主线程闲着，正好替请求线程弹选择框（macOS 只许主线程开窗口，见 _pick）
+    _MAIN_CALLS = queue.Queue()
     try:
-        while True:
-            threading.Event().wait(3600)
+        _serve_main_calls(_MAIN_CALLS)
     except KeyboardInterrupt:
         pass
 
