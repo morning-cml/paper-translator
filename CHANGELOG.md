@@ -100,8 +100,9 @@ Node 20 目标，正被运行器强制跑在 Node 24 上。当时不影响构建
   **验证**：用 release.yml 自带的 `workflow_dispatch`（"只构建、不发布"）在分支上
   跑通 test + Windows/macOS × full/lite 四档构建，`release` 作业按
   `if: startsWith(github.ref, 'refs/tags/')` 正确跳过；告警 6 条 → **0 条**。
-  ⚠️ `release` 作业里的 download-artifact 与 action-gh-release 只在打 tag 时执行，
-  dispatch 验证不到，要到下次发版才第一次真跑。
+  `release` 作业里的 download-artifact 与 action-gh-release 只在打 tag 时执行，
+  dispatch 验证不到——**已在 v1.4.1 发版时第一次真跑通过**（2026-11-03）：
+  4 个安装包正常上传，Releases 的 latest 正确指向 v1.4.1。
 
 - **新增 `.github/dependabot.yml`**：按月盯 GitHub Actions 版本，五个 action
   合成一个 PR（它们本就该一起升）。PR 会自动触发 `test.yml`（它监听
