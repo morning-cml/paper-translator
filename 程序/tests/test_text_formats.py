@@ -282,3 +282,38 @@ def test_crlf_source_keeps_crlf_everywhere(tmp_path, name, raw):
 def test_lf_source_stays_lf(tmp_path, name, raw):
     """反向也要守住：LF 源文件不能被"顺手"改成 CRLF。"""
     assert b"\r" not in _mock_bytes(tmp_path, name, raw)
+
+
+def test_bilingual_markdown_table_stays_one_row(tmp_path):
+    """回归：双语模式把"原文\n译文"塞进表格单元格，一行表格被拆成多行，
+    整张表当场失效。单元格内应改用 <br>。"""
+    md = ("| Model | Note |\n|---|---|\n"
+          "| Baseline network | works well on small data |\n")
+    out, _ = _mock(tmp_path, "t.md", md, output_mode="bilingual")
+    rows = [ln for ln in out.splitlines() if ln.startswith("|")]
+    assert len(rows) == 3, f"表格行数被改变：{out!r}"
+    assert "<br>" in rows[2] and _cjk(rows[2])
+
+
+def test_translated_table_cell_newline_and_pipe_sanitized(tmp_path):
+    """模型偶尔在单元格译文里输出换行/裸竖线，纯译文模式下同样会拆表。"""
+    from src.glossary import Glossary
+    from src.text_translator import translate_text_file
+    from src.translator import BaseTranslator
+
+    class Messy(BaseTranslator):
+        def _translate_batch(self, batch, gb):
+            return ["第一行\n第二行 | 竖线" for _ in batch]
+
+    src = tmp_path / "t.md"
+    src.write_text("| Model | Note |\n|---|---|\n| Baseline network | small data |\n",
+                   encoding="utf-8")
+    out = tmp_path / "o.md"
+    translate_text_file(str(src), str(out), load_config(auto_glossary=False),
+                        translator=Messy(), glossary=Glossary({}))
+    rows = [ln for ln in out.read_text(encoding="utf-8").splitlines()
+            if ln.startswith("|")]
+    assert len(rows) == 3, rows
+    assert "\n" not in rows[2] and "竖线" in rows[2]
+    # 译文里的竖线已转义：整行只剩真正的列分隔符（行首、列间、行尾共 3 个）
+    assert rows[2].replace("\\|", "").count("|") == 3, rows[2]

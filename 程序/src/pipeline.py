@@ -180,7 +180,9 @@ def make_translator(cfg: Config, mock: bool = False,
         # 缓存写用户目录：打包后临时解包目录会被清空，缓存必须持久保留
         persist = TransCache(user_path("cache", "translations.json"))
     tr = DeepSeekTranslator(
-        api_key=cfg.api_key,
+        # 本地服务（Ollama）不需要 Key；与 check_connection 同一口径给个占位，
+        # 否则预检能过、真正翻译时却在构造这一步报"未提供 API Key"。
+        api_key=cfg.api_key or ("local" if _is_local_url(cfg.base_url) else ""),
         model=cfg.model,
         base_url=cfg.base_url,
         temperature=cfg.temperature,
@@ -322,8 +324,11 @@ def output_suffix(mode: str, ext: str = ".pdf") -> str:
     """统一的输出文件名后缀规则（各入口共用，避免命名不一致）。
 
     只有 PDF 有"左右对照"的版面概念；其余格式的双语一律是"原文+译文"并排
-    成段/成行，统称 bilingual。
+    成段/成行，统称 bilingual。PowerPoint 没有双语输出（文本框塞进双倍文字
+    必然溢出），永远是纯译文——文件名不能谎称 bilingual。
     """
+    if ext.lower() == ".pptx":
+        return "_translation"
     if ext.lower() != ".pdf":
         return "_translation_bilingual" if mode != "translated" else "_translation"
     return {"bilingual": "_translation_bilingual",

@@ -103,7 +103,7 @@ git clone https://github.com/morning-cml/paper-translator.git
 cd paper-translator/程序
 py -m pip install -r requirements.txt
 py webui.py                                # 启动（原生应用窗口）
-py -m pytest -q                            # 测试套件（198 项）
+py -m pytest -q                            # 测试套件（372 项）
 py translate_cli.py "论文.pdf" --mock      # 离线跑通版式，不花 token
 ```
 

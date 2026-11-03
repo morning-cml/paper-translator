@@ -22,9 +22,15 @@ from typing import List
 
 _PH = re.compile(r"⟦F\d+⟧")
 _NUM = re.compile(r"\d+(?:\.\d+)?")
+# 只认"套话 + 指明这是译文"的组合。"以下是 / 这是 / 当然，/ Here is" 单独出现
+# 都可能是正文本身——"The following are…"→"以下是…"、"This is because…"→
+# "这是因为…"、zh→en 的 "Here is a study…"——旧规则把它们一概判为元话语，
+# 每段白发一次重译请求，而重译照样这么开头、修正必被拒，纯属浪费。
 _META = re.compile(
-    r"^\s*(以下是|下面是|这是您?的?|翻译如下|译文如下|翻译[:：]|译文[:：]|"
-    r"好的[，,]|当然[，,]|Translation\s*[:：]|Here(?:'s| is)\b)", re.I)
+    r"^\s*(?:(?:以下|下面|这)是.{0,15}?(?:译文|翻译)|翻译如下|译文如下|"
+    r"翻译[:：]|译文[:：]|好的[，,！!]|当然[，,！!]\s*(?:以下|下面|这)是|"
+    r"Translation\s*[:：]|Here(?:'s| is) (?:the |your |my )?"
+    r"(?:\w+ ){0,2}translation)", re.I)
 
 # 中文数字写法（模型把 "2" 译成"二/两"是正确的，不算错漏）
 _CN_DIGITS = {

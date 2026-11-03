@@ -17,15 +17,36 @@ def codes(src, tgt):
 
 
 # ---- 正常译文零误报（阈值按真实语料标定）----
-@pytest.mark.parametrize("tgt", [
-    GOOD,
-    "使用本文需遵守服务条款",                                  # 实测最短比 0.20
-    "图 8. 不同条件下学生的课堂活动参与。",
-    "投稿日期：2024年11月18日  接收日期：2025年8月12日",
+# 每条译文配**它自己的**原文。此前这里只有两种原文轮着用、断言末尾还挂着
+# `or True`——无论 check 返回什么都通过，"零误报"其实从没被测过。
+@pytest.mark.parametrize("src,tgt", [
+    (SRC, GOOD),
+    ("Use of this article is subject to the Terms of service",
+     "使用本文需遵守服务条款"),                                # 实测最短比 0.20
+    ("Fig. 8. Students' classroom activity engagement in different conditions.",
+     "图 8. 不同条件下学生的课堂活动参与。"),
+    ("Submitted 18 November 2024 Accepted 12 August 2025",
+     "投稿日期：2024年11月18日  接收日期：2025年8月12日"),
+    # 以下开头都是正文本身，不是模型的客套话
+    ("The following are the three main contributions of this paper to the "
+     "field of human-computer interaction research.",
+     "以下是本文对人机交互研究领域的三项主要贡献："),
+    ("This is because participants had been exposed to similar robots and "
+     "related task settings before the experiment.",
+     "这是因为参与者在实验之前已经接触过类似的机器人和相关的任务设置。"),
+    ("Of course, this conclusion still needs to be verified with a larger "
+     "sample while considering other confounding factors.",
+     "当然，这一结论仍需在更大规模的样本中加以验证，并考虑其他混杂因素。"),
 ])
-def test_no_false_positive_on_normal(tgt):
-    src = SRC if len(tgt) > 30 else "Use of this article is subject to the Terms of service"
-    assert not check(src, tgt) or codes(src, tgt) <= {"missing_numbers"} or True
+def test_no_false_positive_on_normal(src, tgt):
+    assert check(src, tgt) == []
+
+
+def test_english_target_here_is_not_meta():
+    """zh→en 时 "Here is …" 可以是正文。"""
+    src = "这是一项关于机器人的研究，我们在课堂中测试了学生的学习效果和参与程度。"
+    tgt = "Here is a study in which we tested how students learn with a robot peer in class."
+    assert "meta_prefix" not in {i.code for i in check(src, tgt, "zh", "en")}
 
 
 def test_good_translation_passes():
@@ -58,9 +79,12 @@ def test_cn_number_forms(num, forms):
         assert f in got, f"{num} 应接受中文写法 {f}，实际生成 {got}"
 
 
-def test_detects_meta_prefix():
-    assert "meta_prefix" in codes(SRC, "以下是翻译：" + GOOD)
-    assert "meta_prefix" in codes(SRC, "好的，" + GOOD)
+@pytest.mark.parametrize("prefix", [
+    "以下是翻译：", "好的，", "以下是该段落的中文译文：", "这是翻译结果：",
+    "当然！以下是", "译文：", "Here is the translation: ",
+])
+def test_detects_meta_prefix(prefix):
+    assert "meta_prefix" in codes(SRC, prefix + GOOD)
 
 
 def test_detects_repetition():

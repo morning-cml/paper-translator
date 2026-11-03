@@ -57,10 +57,17 @@ def _worth_translating(text: str, target_code: str = "zh") -> bool:
 
 def _iter_paragraphs(container, seen: set):
     """递归遍历容器内的段落（正文 → 表格 → 嵌套表格）。合并单元格会重复
-    返回同一段落，用 id 去重。"""
+    返回同一段落，需去重。
+
+    ⚠️ 去重必须存**元素本身**，不能存 id()。lxml 元素的 Python 代理对象用完
+    即释放、下次访问再新建；不入选的段落（空段、纯数字段）一释放，它的内存
+    地址就会被后面新建的代理复用——id 撞上，那个段落被当成"见过"而跳过。
+    实测正文有 300 个空段时，其后表格的 90 个单元格**一个都没采到**。存元素
+    本身会让代理一直活着，身份稳定，也就不存在复用。
+    """
     for p in getattr(container, "paragraphs", []):
-        if id(p._p) not in seen:
-            seen.add(id(p._p))
+        if p._p not in seen:
+            seen.add(p._p)
             yield p
     for t in getattr(container, "tables", []):
         for row in t.rows:
@@ -77,7 +84,10 @@ def _collect(doc, target_code: str = "zh") -> List[_Unit]:
                      getattr(section, "first_page_footer", None),
                      getattr(section, "even_page_header", None),
                      getattr(section, "even_page_footer", None)):
-            if part is not None:
+            # 「沿用上一节」的页眉页脚没有自己的定义：内容已随上一节采过。
+            # 而且**读它会改文档**——python-docx 访问未定义的页眉时会当场
+            # 新建一个空页眉部件（实测一份无页眉的文档译完多出 6 个部件）。
+            if part is not None and not part.is_linked_to_previous:
                 containers.append(part)
 
     units: List[_Unit] = []

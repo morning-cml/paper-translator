@@ -68,6 +68,8 @@ class Seg:
     suffix: str = ""          # 结构后缀（如表格的 " |"）
     holes: Dict[int, str] = field(default_factory=dict)   # 占位符还原表
     translation: Optional[str] = None
+    # 行内片段（Markdown 表格单元格）：不许含换行，否则整张表被拆碎
+    inline: bool = False
 
     def render(self) -> str:
         if self.kind == "raw":
@@ -145,12 +147,14 @@ def _finalize(segs: List[Seg], trailing_nl: bool) -> List[Seg]:
     return segs
 
 
-def _mk_text_seg(content: str, prefix: str = "", suffix: str = "") -> Seg:
+def _mk_text_seg(content: str, prefix: str = "", suffix: str = "",
+                 inline: bool = False) -> Seg:
     masked, holes = _protect(content)
     kind = "text" if _worth_translating(masked) else "raw"
     if kind == "raw":
         return Seg("raw", prefix + content + suffix)
-    return Seg("text", masked, prefix=prefix, suffix=suffix, holes=holes)
+    return Seg("text", masked, prefix=prefix, suffix=suffix, holes=holes,
+               inline=inline)
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +223,7 @@ def _parse_markdown(text: str) -> List[Seg]:
                     lead = cell[:len(cell) - len(cell.lstrip())]
                     trail = cell[len(cell.rstrip()):]
                     segs.append(_mk_text_seg(cell.strip(), prefix=lead,
-                                             suffix=trail))
+                                             suffix=trail, inline=True))
                 else:
                     segs.append(Seg("raw", cell))
             segs.append(Seg("raw", "\n"))
@@ -386,7 +390,12 @@ def translate_text_file(
         for seg, tr in zip(units, results):
             if not _translated(seg.body, tr, cfg):
                 continue                       # 模型原样退回 → 保留原文
-            seg.translation = (seg.body + "\n" + tr) if bilingual else tr
+            if seg.inline:
+                # 表格单元格：模型偶尔输出的换行与裸竖线同样会拆碎整张表
+                tr = re.sub(r"(?<!\\)\|", r"\\|", re.sub(r"\s*\n\s*", " ", tr))
+            # 双语：原文与译文分两行；表格单元格里换行会拆碎整张表，改用 <br>
+            sep = "<br>" if seg.inline else "\n"
+            seg.translation = (seg.body + sep + tr) if bilingual else tr
             n_done += 1
 
         hits = getattr(translator, "cache_hits", 0)

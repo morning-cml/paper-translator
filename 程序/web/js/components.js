@@ -76,6 +76,16 @@ const DOMAINS = ["计算机科学", "通用学术", "生物医学", "物理学",
 
 const CUSTOM = "__custom__";
 
+/* 本机服务（Ollama 等）不需要 Key——与后端 pipeline._is_local_url 同口径。 */
+function isLocalBase(url) {
+  try {
+    const h = new URL(url).hostname;
+    return ["127.0.0.1", "localhost", "0.0.0.0", "[::1]", "::1"].includes(h);
+  } catch {
+    return false;
+  }
+}
+
 /* 「下拉 + 自定义」联动：选到"自定义…"时显示旁边的输入框。
    （datalist 会按已填文字过滤选项，导致"看起来只有一个选项"——弃用。） */
 function comboSetup(selId, customId) {
@@ -187,7 +197,8 @@ export function initSettings() {
     $("s-remember").checked = !!cfg.api_key;
     // 首次引导：未配置 Key 且用户没手动关掉过，才显示
     const dismissed = localStorage.getItem("guide-dismissed") === "1";
-    if (!cfg.api_key && !dismissed) $("guide-card").hidden = false;
+    if (!cfg.api_key && !isLocalBase(cfg.base_url || "") && !dismissed)
+      $("guide-card").hidden = false;
     $("s-baseurl").value = cfg.base_url || "";
     $("s-mode").value = cfg.output_mode || "translated";
     $("s-trial").value = cfg.max_pages || 0;
@@ -282,7 +293,7 @@ export function initRun() {
       name.textContent = o.file.split(/[\\/]/).pop();
       const b1 = document.createElement("button");
       b1.className = "btn btn-sm";
-      b1.textContent = "打开 PDF";
+      b1.textContent = "打开文件";
       b1.addEventListener("click", () => api.open(o.file));
       const b2 = document.createElement("button");
       b2.className = "btn btn-sm";
@@ -313,10 +324,11 @@ export function initRun() {
 
   $("btn-start").addEventListener("click", async () => {
     const files = store.get("files");
-    if (!files.length) return toast("请先选择 PDF 文件");
+    if (!files.length) return toast("请先选择要翻译的文件");
     const overrides = collectSettings();
     const mock = $("s-mock").checked;
-    if (!mock && !overrides.api_key) return toast("请填写 API Key（或勾选离线测试）");
+    if (!mock && !overrides.api_key && !isLocalBase(overrides.base_url || ""))
+      return toast("请填写 API Key（或勾选离线测试）");
     const outdir = outdirValue();
     if ($("s-out-custom").checked && !outdir)
       return toast("请先选择输出文件夹（或改回“原文件同目录”）");

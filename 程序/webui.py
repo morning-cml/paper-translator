@@ -35,6 +35,15 @@ JOBS: dict = {}
 JOBS_LOCK = threading.Lock()
 PICK_LOCK = threading.Lock()
 
+# 跨站防护：所有 /api/ 请求必须带这个自定义头（值随意，前端统一发它）。
+#
+# 只绑 127.0.0.1 挡不住"你正在浏览的网页"——恶意页面可以用 no-cors 的
+# text/plain 简单请求直接打本机端口，浏览器不预检、照发不误。实测此前一条
+# 这样的请求就能让 /api/test 把 config.json 里的 Key 发到对方指定的 base_url，
+# /api/open 则能让 os.startfile 打开本机任意程序。
+# 带自定义头的跨站请求必须先过 CORS 预检，而本服务不响应 OPTIONS → 浏览器拒发。
+API_HEADER = "X-Paper-Translator"
+
 _MIME = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
          ".js": "text/javascript; charset=utf-8", ".json": "application/json",
          ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon",
@@ -130,6 +139,25 @@ def _pick(kind: str = "pdf") -> list:
             root.destroy()
 
 
+def _produced_file(path: str):
+    """path 若是某个任务的产物，返回其规范化 Path；否则 None。"""
+    if not path:
+        return None
+    try:
+        want = Path(path).resolve()
+    except (OSError, ValueError):
+        return None
+    with JOBS_LOCK:
+        files = [o["file"] for j in JOBS.values() for o in j["outputs"]]
+    for f in files:
+        try:
+            if Path(f).resolve() == want:
+                return want
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def _os_open(target: str) -> None:
     """用系统默认程序打开本机文件/文件夹（跨平台：Win / mac / Linux）。"""
     if sys.platform == "win32":
@@ -165,6 +193,26 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001
             return {}
 
+    def _trusted(self, api: bool) -> bool:
+        """请求是否来自本程序自己的页面。不是则回 403。
+
+        · Host 必须是本机回环地址+本端口：挡 DNS 重绑定（攻击者域名解析到
+          127.0.0.1 后就"同源"了，自定义头也拦不住它，只有 Host 露馅）；
+        · 带 Origin 的必须是同一来源：浏览器对跨站 POST 一律带 Origin；
+        · /api/ 还必须带 API_HEADER（见其注释）。
+        """
+        port = self.server.server_address[1]
+        own = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        ok = (self.headers.get("Host") or "") in own
+        origin = self.headers.get("Origin")
+        if ok and origin is not None:
+            ok = origin in {f"http://{h}" for h in own}
+        if ok and api:
+            ok = self.headers.get(API_HEADER) is not None
+        if not ok:
+            self._json({"error": "forbidden"}, 403)
+        return ok
+
     def _static(self, rel: str):
         p = (WEB / rel).resolve()
         # 越界判定必须按**路径层级**来：字符串前缀比较会把同级的 "web…" 兄弟
@@ -184,6 +232,8 @@ class Handler(BaseHTTPRequestHandler):
     # ---- 路由 ----
     def do_GET(self):
         path = urlparse(self.path).path
+        if not self._trusted(api=path.startswith("/api/")):
+            return
         if path in ("/", "/index.html"):
             return self._static("index.html")
         if path.startswith("/web/"):
@@ -213,6 +263,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if not self._trusted(api=True):
+            return
         body = self._body()
 
         if path == "/api/config":
@@ -265,11 +317,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._json({"error": "no such job"}, 404)
 
         if path == "/api/open":
-            target = body.get("path", "")
+            # 只许打开本程序产出的文件（及其所在文件夹）。前端也只会请求这些；
+            # 放开任意路径等于给 os.startfile 开了"运行本机任意程序"的口子。
+            target = _produced_file(body.get("path", ""))
+            if target is None:
+                return self._json({"ok": False, "error": "只能打开本次翻译产出的文件"}, 403)
             if body.get("folder"):
-                target = str(Path(target).parent)
-            if target and Path(target).exists():
-                _os_open(target)
+                target = target.parent
+            if target.exists():
+                _os_open(str(target))
                 return self._json({"ok": True})
             return self._json({"ok": False, "error": "路径不存在"}, 404)
 

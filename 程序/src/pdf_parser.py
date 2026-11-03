@@ -632,8 +632,12 @@ def _is_translatable(text: str, from_ocr: bool = False, is_bold: bool = False,
 # 检测为引用块的一律 translatable=False，写回端完全不动它们。
 
 _REF_HEADING_RE = re.compile(
-    r"^\s*(references?(\s+and\s+notes)?|bibliography|works\s+cited)\s*$", re.I)
-_ENTRY_START_RE = re.compile(r"(?:^|\s)\d{1,3}\.\s+[A-Z]")   # "12. M. Kapur,"
+    r"^\s*(?:(?:\d{1,2}|[IVX]{1,4})\.?\s+)?"                  # 可带章节号 "7 " / "VII. "
+    r"(references?(\s+and\s+notes)?|bibliography|works\s+cited|literature\s+cited)"
+    r"\s*:?\s*$", re.I)
+# 条目开头两种编号："12. M. Kapur,"（Science 等）与 "[12] M. Kapur."（ACM/IEEE）
+_ENTRY_START_RE = re.compile(r"(?:^|\s)(?:\d{1,3}\.|\[\d{1,3}\])\s+[A-Z]")
+_ENTRY_HEAD_RE = re.compile(r"\s*(?:\d{1,3}\.|\[\d{1,3}\])\s+[A-Z]")
 _YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
 _PAGES_RE = re.compile(r"\b\d+\s*[–—-]\s*\d+\b")             # "209–249"
 
@@ -644,7 +648,7 @@ def _looks_like_reference_list(text: str, in_refs: bool) -> bool:
     pages = len(_PAGES_RE.findall(text))
     if starts >= 3 and years >= 2:          # 多条目合并块（最常见形态）
         return True
-    if (re.match(r"\s*\d{1,3}\.\s+[A-Z]", text)
+    if (_ENTRY_HEAD_RE.match(text)
             and years >= 1 and (pages >= 1 or starts >= 2)):
         return True                          # 以编号开头的单条目/短块
     if in_refs and (years + pages) >= 2:
@@ -670,6 +674,17 @@ def _mark_reference_blocks(layouts: List[PageLayout]) -> int:
             # 页脚（"Chen et al., Sci. Robot. 10, … (2025)…"）含年份，会被
             # 续块规则误捕。它是页面"家具"、不在正文流里：跳过且不改状态。
             if b.top > 0.92 * L.height:
+                continue
+            # 页眉同理（"Sun et al." / 会议名）：它夹在两页参考文献之间，按
+            # "不像引用"处理会把状态切出引用区，下一页起的条目就全被送去翻译。
+            # 实测 ACM 论文第 16–18 页约 1.6 万字符的文献因此被译、版式被毁。
+            # 判据取页眉的共性：贴页顶、短、非粗体（章节标题是粗体，要照常
+            # 切状态）。跨页续块恰好贴顶时照样标记，只是不改状态。
+            if (b.top < 0.085 * L.height and not b.bold
+                    and len(b.text or "") < 120):
+                if in_refs and _looks_like_reference_list(b.text or "", True):
+                    b.translatable = False
+                    marked += 1
                 continue
             if _REF_HEADING_RE.match(b.text or ""):
                 in_refs = True

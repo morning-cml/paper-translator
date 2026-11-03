@@ -1,10 +1,10 @@
 {
-  "api_key": "在此填入你的 DeepSeek API Key（sk-...）",
+  "api_key": "在此填入你的 API Key（DeepSeek 为 sk- 开头；Ollama 本地可留空）",
   "base_url": "https://api.deepseek.com",
   "model": "deepseek-v4-pro",
   "temperature": 1.0,
-  "source_lang": "英文",
-  "target_lang": "中文",
+  "source_lang": "auto",
+  "target_lang": "zh",
   "output_mode": "translated",
   "glossary_path": "glossary/cs_terms.csv",
   "batch_size": 8,
@@ -17,7 +17,13 @@
   "font_path": "",
   "use_cache": true,
   "domain": "计算机科学",
+  "auto_glossary": true,
+  "auto_glossary_limit": 30,
+  "save_glossary_path": "",
   "max_pages": 0,
+  "page_range": "",
+  "formula_font_pattern": "",
+  "formula_char_pattern": "",
   "price_in": 0.0,
   "price_out": 0.0
 }

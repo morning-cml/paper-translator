@@ -81,8 +81,10 @@ def test_reopenable(translated):
     assert len(deck.slides._sldIdLst) == 3
 
 
-def test_pptx_suffix_naming():
-    assert output_suffix("translated", ".pptx") == "_translation"
+@pytest.mark.parametrize("mode", ["translated", "bilingual", "sidebyside", "updown"])
+def test_pptx_suffix_naming(mode):
+    """PPT 没有双语输出，任何模式都是纯译文——文件名不能写成 _bilingual。"""
+    assert output_suffix(mode, ".pptx") == "_translation"
 
 
 def test_legacy_ppt_rejected(tmp_path):

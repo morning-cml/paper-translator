@@ -1,7 +1,7 @@
-"""命令行入口：批量/脚本化翻译 PDF。
+"""命令行入口：脚本化翻译文档（PDF / Word / PowerPoint / Markdown / TXT / SRT）。
 
 示例：
-    python translate_cli.py paper.pdf                    # 译文覆盖，输出 paper_zh.pdf
+    python translate_cli.py paper.pdf                    # 纯译文，输出 paper_translation.pdf
     python translate_cli.py paper.pdf -o out.pdf --mode bilingual
     python translate_cli.py paper.pdf --mock             # 离线占位翻译（测试排版）
     python translate_cli.py paper.pdf --api-key sk-xxx --model deepseek-v4-pro
@@ -19,10 +19,10 @@ from src.translator import TranslatorError
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="科研文档英译中工具（PDF / Word / Markdown / TXT / SRT）")
+        description="科研文档翻译工具（PDF / Word / PowerPoint / Markdown / TXT / SRT）")
     ap.add_argument("input",
-                    help="输入文件路径（.pdf .docx .md .txt .srt）")
-    ap.add_argument("-o", "--output", help="输出 PDF 路径（默认 <输入名>_zh.pdf）")
+                    help="输入文件路径（.pdf .docx .pptx .md .txt .srt）")
+    ap.add_argument("-o", "--output", help="输出路径（默认 <输入名>_translation.<原扩展名>，双语模式另带后缀）")
     ap.add_argument("--mode",
                     choices=["translated", "bilingual", "sidebyside", "updown"],
                     help="translated=纯译文；bilingual=双语·前后页；"

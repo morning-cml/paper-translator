@@ -124,6 +124,8 @@ def translate_pptx(
     texts = [u.text for u in units]
     n_slides = len(prs.slides._sldIdLst)
     report(f"共 {n_slides} 张幻灯片、{len(texts)} 个待译段落", 0.08)
+    if getattr(cfg, "output_mode", "translated") != "translated":
+        report("PowerPoint 不支持双语对照（文本框放不下双倍文字），本文件输出纯译文", 0.08)
 
     if glossary is None:
         glossary = Glossary.load(cfg.resolved_glossary_path())
@@ -171,5 +173,4 @@ def translate_pptx(
         prs.save(_out.tmp)        # 原子写出：中途失败不留半截损坏演示文稿
     report("完成", 1.0)
     return {"pages": len(prs.slides._sldIdLst), "blocks": n_done,
-            "output": _out.path, "mode": getattr(cfg, "output_mode", "translated"),
-            "backend": "pptx"}
+            "output": _out.path, "mode": "translated", "backend": "pptx"}

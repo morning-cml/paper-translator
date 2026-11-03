@@ -9,7 +9,10 @@
     layout          共享重排引擎（断行禁则、绕图避障、自适应缩号）
     pdf_writer      译文回填 PDF（reportlab 覆盖，兜底后端）
     pdf_writer_fitz 译文回填 PDF（PyMuPDF 精确抹除，首选后端）
-    docx_translator Word / PowerPoint / Markdown / TXT / SRT 翻译
+    docx_translator Word 翻译（按 run 就地替换）
+    pptx_translator PowerPoint 翻译（文本框/表格/备注）
+    text_translator Markdown / TXT / SRT 翻译（结构用占位符保护）
+    metrics         版面保真量化评测（BIoU + UTB）
     translator      翻译客户端（任意 OpenAI 兼容接口，含离线 Mock）
     quality         译文质量自检（截断/啰嗦/数字错漏/元话语/重复退化）
     pipeline        串联整个翻译流水线

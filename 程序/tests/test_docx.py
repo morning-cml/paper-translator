@@ -136,3 +136,63 @@ def test_legacy_doc_rejected(tmp_path):
     f.write_bytes(b"fake")
     with pytest.raises(TranslatorError, match="另存为"):
         translate_document(str(f), str(tmp_path / "o.doc"), load_config())
+
+
+# ---------------- 采集口径：去重与只读 ----------------
+def _doc_with_table(path, n_lead: int):
+    d = docx.Document()
+    for i in range(n_lead):                 # 空段 / 纯数字段：不入选、代理会被释放
+        d.add_paragraph("" if i % 2 else "12345")
+    t = d.add_table(rows=10, cols=3)
+    for r in range(10):
+        for c in range(3):
+            t.cell(r, c).text = f"Cell text number {r} {c}"
+    d.save(str(path))
+
+
+def test_table_cells_collected_after_many_skipped_paragraphs(tmp_path):
+    """回归：去重曾按 id(元素) 记——被释放的代理地址被复用，id 撞上，
+    表格段落被当成"见过"整片跳过。正文 300 个空段时 30 个单元格一个都没采到。"""
+    from src.docx_translator import _collect
+    f = tmp_path / "t.docx"
+    _doc_with_table(f, 300)
+    units = _collect(docx.Document(str(f)))
+    assert sum(u.text.startswith("Cell text") for u in units) == 30
+
+
+def test_merged_cells_still_deduplicated(tmp_path):
+    """横向合并的单元格被 python-docx 重复返回，仍只能采一次。"""
+    from src.docx_translator import _collect
+    d = docx.Document()
+    t = d.add_table(rows=1, cols=3)
+    t.cell(0, 0).merge(t.cell(0, 2)).text = "Merged header cell text"
+    f = tmp_path / "m.docx"
+    d.save(str(f))
+    texts = [u.text for u in _collect(docx.Document(str(f)))]
+    assert texts.count("Merged header cell text") == 1
+
+
+def test_no_header_parts_invented(tmp_path):
+    """回归：读取未定义的页眉页脚会让 python-docx 当场新建空部件——一份无页眉
+    的文档译完多出 6 个 header/footer 部件。翻译不该改动它没碰的结构。"""
+    import zipfile
+    d = docx.Document()
+    d.add_paragraph("A plain paragraph that will be translated.")
+    src = tmp_path / "plain.docx"
+    d.save(str(src))
+    out = tmp_path / "plain_zh.docx"
+    translate_document(str(src), str(out), load_config(), mock=True)
+    names = zipfile.ZipFile(str(out)).namelist()
+    assert not [n for n in names if "header" in n or "footer" in n]
+
+
+def test_defined_header_still_translated(tmp_path):
+    d = docx.Document()
+    d.sections[0].header.paragraphs[0].text = "Running header of the paper"
+    d.add_paragraph("Body paragraph of the paper.")
+    src = tmp_path / "h.docx"
+    d.save(str(src))
+    out = tmp_path / "h_zh.docx"
+    translate_document(str(src), str(out), load_config(), mock=True)
+    head = docx.Document(str(out)).sections[0].header.paragraphs[0].text
+    assert _has_cjk(head)

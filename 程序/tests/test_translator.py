@@ -258,3 +258,103 @@ def test_no_pointless_sleep_after_final_attempt(monkeypatch):
     with pytest.raises(TranslatorError):
         tr._chat([{"role": "user", "content": "hi"}])
     assert slept == [1, 2], "3 次尝试之间只需 2 次退避"
+
+
+# ---------------------------------------------------------------------------
+# 收尾（强化重试 / 质量重译）在工作线程里并行
+# ---------------------------------------------------------------------------
+
+def test_quality_fixes_run_in_parallel(gloss):
+    """回归：定向重译原先在主线程收结果时**串行**发请求，命中多的文档被拖成
+    单线程。两段各自触发重译时，两次重译必须能同时在途——用 Barrier 卡住：
+    串行执行的话第一个会等满超时、重译失败。"""
+    import threading
+    gate = threading.Barrier(2, timeout=5)
+
+    class Fixer(BaseTranslator):
+        def _translate_batch(self, batch, gb):
+            return ["译"] * len(batch)            # 过短 → 必触发质量重译
+
+        def _translate_fix(self, text, problem, gb):
+            gate.wait()                           # 两次重译同时到场才放行
+            return "我们比较了多个课堂中的三种教学方法，以仔细评估学习成果。" * 2
+
+    src = ["We compared three instructional methods across many classrooms "
+           f"to evaluate learning outcomes in study number {i} carefully."
+           for i in range(2)]
+    t = Fixer(batch_size=1, max_workers=2)
+    out = t.translate_texts(src, gloss)
+    assert t.quality_flags == 2 and t.quality_fixed == 2, "两次重译应并行完成"
+    assert all(o.startswith("我们比较了") for o in out)
+
+
+def test_ph_failure_falls_back_and_is_counted(gloss):
+    class Lossy(StubTranslator):
+        def _translate_strict(self, text, glossary_block):
+            self.strict_calls += 1
+            return "还是丢了占位符"
+
+    src = ["公式 ⟦F1⟧ 在此"]
+    t = Lossy(batch_size=1, bad_placeholder=True)
+    assert t.translate_texts(src, gloss) == src, "占位符对不上 → 保留原文"
+    assert t.ph_failures == 1 and t.strict_calls == 1
+
+
+# ---------------------------------------------------------------------------
+# _chat：异常响应与限流
+# ---------------------------------------------------------------------------
+
+class _NullResp(_Resp):
+    def json(self):
+        return {"choices": [{"message": {"content": None}}]}
+
+
+def test_null_content_is_a_clear_error(monkeypatch):
+    """200 但正文为 null / 缺 choices：旧代码抛裸 KeyError/AttributeError，
+    联通性预检里用户只看到一句 "'choices'"。"""
+    from src.translator import TranslatorError
+
+    def handler(*a, **k):
+        return _NullResp(200, '{"choices":[{"message":{"content":null}}]}')
+
+    tr = _client(monkeypatch, handler, max_retries=2)
+    with pytest.raises(TranslatorError, match="空内容"):
+        tr._chat([{"role": "user", "content": "hi"}])
+
+
+def test_429_honors_retry_after(monkeypatch):
+    import requests  # noqa: F401
+    from src.translator import DeepSeekTranslator
+    slept, calls = [], []
+
+    class R429(_Resp):
+        headers = {"Retry-After": "7"}
+
+    def handler(*a, **k):
+        calls.append(1)
+        return R429(429, "rate limited") if len(calls) == 1 else _Resp(200)
+
+    tr = DeepSeekTranslator(api_key="k", timeout=5, max_retries=3)
+    monkeypatch.setattr(tr.session, "post", handler)
+    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
+    assert tr._chat([{"role": "user", "content": "hi"}]) == "你好"
+    assert slept == [7.0], "限流应按 Retry-After 等待，而不是 1 秒后再撞一次"
+
+
+def test_local_service_needs_no_key():
+    """回归：Ollama 等本地服务不需要 Key。联通性预检给了占位能过，真正翻译
+    时 make_translator 却报"未提供 API Key"——界面上写着"无需 Key"却跑不起来。"""
+    from src.config import Config
+    from src.pipeline import make_translator
+    cfg = Config(api_key="", base_url="http://127.0.0.1:11434/v1",
+                 model="qwen2.5:7b", use_cache=False)
+    tr = make_translator(cfg)
+    assert tr.base_url == "http://127.0.0.1:11434/v1"
+
+
+def test_remote_service_still_requires_key():
+    from src.config import Config
+    from src.pipeline import make_translator
+    from src.translator import TranslatorError
+    with pytest.raises(TranslatorError, match="API Key"):
+        make_translator(Config(api_key="", use_cache=False))

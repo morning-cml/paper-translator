@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, List, Optional
@@ -49,6 +50,8 @@ class BaseTranslator:
         self.cache_hits = 0     # 持久缓存命中段数（T1）
         self.quality_flags = 0  # 质量自检命中并触发重译的段数（B3）
         self.quality_fixed = 0  # 重译后通过自检的段数（B3）
+        # 上面几个计数由工作线程累加（见 _finalize），+= 不是原子操作
+        self._stats_lock = threading.Lock()
         # T1 持久化缓存：persist 为 TransCache 实例；scope 参与键（模型/领域/上下文）
         self.persist = persist
         self.cache_scope = cache_scope
@@ -80,17 +83,24 @@ class BaseTranslator:
                        glossary_block: str) -> Optional[str]:
         return None
 
-    def _quality_pass(self, src: str, tgt: str, glossary) -> str:
+    def _bump(self, attr: str) -> None:
+        with self._stats_lock:
+            setattr(self, attr, getattr(self, attr) + 1)
+
+    def _quality_pass(self, src: str, tgt: str, glossary,
+                      cancelled: Callable[[], bool] = lambda: False) -> str:
         """B3：本地规则自检，命中则定向重译一次，取更好的那个。
 
         重译结果必须同时通过「占位符校验」与「质量自检」才采纳；否则保留
-        首次译文（它通常仍可用，强行替换反而可能更差）。
+        首次译文（它通常仍可用，强行替换反而可能更差）。已取消则不再重译。
         """
         from .quality import check, describe
         issues = check(src, tgt, self.source_code, self.target_code)
         if not issues:
             return tgt
-        self.quality_flags += 1
+        self._bump("quality_flags")
+        if cancelled():
+            return tgt
         try:
             fixed = self._translate_fix(src, describe(issues),
                                         glossary.prompt_block([src]))
@@ -98,9 +108,32 @@ class BaseTranslator:
             fixed = None
         if fixed and _ph_ok(src, fixed) \
                 and not check(src, fixed, self.source_code, self.target_code):
-            self.quality_fixed += 1
+            self._bump("quality_fixed")
             return fixed
         return tgt
+
+    def _finalize(self, src: str, tgt: str, glossary,
+                  cancelled: Callable[[], bool]) -> Optional[str]:
+        """一段译文的收尾：占位符校验（不过则强化重试）→ 质量自检。
+
+        返回最终译文；返回 None 表示占位符始终对不上，调用方应保留原文、
+        不写持久缓存（公式位置绝不能丢）。
+
+        在**工作线程**里跑：强化重试与定向重译各要再发一次请求，放在主线程
+        收结果时做就成了串行——命中多的文档整段被拖成单线程。
+        """
+        if _ph_ok(src, tgt):
+            return self._quality_pass(src, tgt, glossary, cancelled)
+        retry = None
+        if not cancelled():
+            try:
+                retry = self._translate_strict(src, glossary.prompt_block([src]))
+            except Exception:  # noqa: BLE001
+                retry = None
+        if retry is not None and _ph_ok(src, retry):
+            return self._quality_pass(src, retry, glossary, cancelled)
+        self._bump("ph_failures")
+        return None
 
     # 子类实现：翻译一批段落，返回与输入等长的译文列表
     def _translate_batch(self, batch: List[str], glossary_block: str) -> List[str]:
@@ -161,9 +194,11 @@ class BaseTranslator:
             # 这是"取消能立刻见效"的关键——否则所有批已 submit，线程池会把它们
             # 全部跑完才肯收摊（旧代码用 with 退出即 shutdown(wait=True)）。
             if cancelled():
-                return list(batch)
+                return None
             block = glossary.prompt_block(batch)
-            return self._translate_batch(batch, block)
+            results = self._translate_batch(batch, block)
+            return [self._finalize(src, tgt, glossary, cancelled)
+                    for src, tgt in zip(batch, results)]
 
         if batches:
             ex = ThreadPoolExecutor(max_workers=self.max_workers)
@@ -185,22 +220,15 @@ class BaseTranslator:
                         if progress_cb:
                             progress_cb(done, total)
                         continue
-                    for src, tgt in zip(batch, results):
-                        if _ph_ok(src, tgt):
-                            self._store(src, self._quality_pass(src, tgt, glossary))
-                            continue
-                        # 占位符丢失/变形 → 单段强化重试一次
-                        retry = None
-                        try:
-                            retry = self._translate_strict(src, glossary.prompt_block([src]))
-                        except Exception:  # noqa: BLE001
-                            retry = None
-                        if retry is not None and _ph_ok(src, retry):
-                            self._store(src, self._quality_pass(src, retry, glossary))
-                        else:
-                            # 保底：保留原文，公式位置绝不丢失；不写持久缓存
-                            self.ph_failures += 1
+                    if results is None:      # 启动前就已取消，从未翻译
+                        continue
+                    for src, final in zip(batch, results):
+                        if final is None:
+                            # 占位符强化重试后仍对不上：保留原文，公式位置
+                            # 绝不丢失；不写持久缓存（下次应重试）
                             self._cache[src] = src
+                        else:
+                            self._store(src, final)
                     if self.persist is not None:
                         self.persist.flush()   # 每批落盘，中途崩溃不丢已译段
                     done += 1
@@ -263,7 +291,7 @@ class DeepSeekTranslator(BaseTranslator):
         super().__init__(batch_size=batch_size, max_workers=max_workers,
                          persist=persist, cache_scope=cache_scope)
         if not api_key:
-            raise TranslatorError("未提供 DeepSeek API Key。")
+            raise TranslatorError("未提供 API Key。")
         self.api_key = api_key
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -314,11 +342,18 @@ class DeepSeekTranslator(BaseTranslator):
         last_err = None
         attempt = 0
         while attempt < self.max_retries:
+            wait = 2 ** attempt   # 指数退避（本轮失败后用）；429 可被 Retry-After 拉长
             try:
                 resp = self.session.post(url, headers=headers, json=payload,
                                          timeout=self.timeout, verify=self.verify_ssl)
                 if resp.status_code == 200:
-                    return resp.json()["choices"][0]["message"]["content"]
+                    content = _content_of(resp)
+                    if content is not None:
+                        return content
+                    # 200 却没有正文（网关错误页、模型拒答/截断返回 null）：
+                    # 旧代码在这里抛出裸 KeyError，用户只看到一句 "'choices'"
+                    last_err = TranslatorError(
+                        f"翻译服务返回了空内容或无法识别的格式：{_short(resp.text)}")
                 # 兼容非 DeepSeek 服务（Kimi/GLM/豆包/OpenAI/Ollama…）：
                 # "thinking" 是 DeepSeek 风格参数，严格校验的服务会报 400
                 # （OpenAI 明确回 "Unrecognized request argument supplied: thinking"），
@@ -330,16 +365,22 @@ class DeepSeekTranslator(BaseTranslator):
                 # 上。而预检是翻译的强制闸门，等于整个工具对所有严格校验参数的
                 # 服务（OpenAI 等）完全不可用。
                 # 本分支至多触发一次：剥掉字段后条件不再成立，不会死循环。
-                if resp.status_code == 400 and "thinking" in payload:
+                elif resp.status_code == 400 and "thinking" in payload:
                     payload = {k: v for k, v in payload.items() if k != "thinking"}
                     continue
                 # 明确的客户端错误不重试
-                if resp.status_code in (401, 402, 403):
+                elif resp.status_code in (401, 402, 403):
                     raise TranslatorError(
                         f"翻译服务返回 {resp.status_code}：{_short(resp.text)}"
                         "（请检查 API Key 是否正确、账户余额是否充足、模型是否已开通）"
                     )
-                last_err = TranslatorError(f"HTTP {resp.status_code}: {_short(resp.text)}")
+                else:
+                    last_err = TranslatorError(
+                        f"HTTP {resp.status_code}: {_short(resp.text)}")
+                    if resp.status_code == 429:
+                        # 限流：照服务给的 Retry-After 等（上限 60s），1~2s 的
+                        # 退避在并发 8 路时几乎必然再撞一次限流
+                        wait = max(wait, min(_retry_after(resp), 60.0))
             except requests.exceptions.SSLError as e:
                 last_err = TranslatorError(
                     "SSL 连接被中断，通常是 VPN/加速器/代理或安全软件拦截了 HTTPS。\n"
@@ -350,7 +391,7 @@ class DeepSeekTranslator(BaseTranslator):
                 last_err = TranslatorError(f"网络请求失败：{e}")
             attempt += 1
             if attempt < self.max_retries:
-                time.sleep(2 ** (attempt - 1))  # 指数退避；最后一次失败不再空等
+                time.sleep(wait)  # 最后一次失败不再空等
         raise last_err or TranslatorError("翻译请求失败。")
 
     # ---- 批量翻译 ----
@@ -475,6 +516,23 @@ class DeepSeekTranslator(BaseTranslator):
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": instruction},
         ]).strip()
+
+
+def _content_of(resp) -> Optional[str]:
+    """取 OpenAI 兼容响应的正文；格式不对或为 null 时返回 None。"""
+    try:
+        content = resp.json()["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return None
+    return content if isinstance(content, str) else None
+
+
+def _retry_after(resp) -> float:
+    """429 响应的 Retry-After（秒）；缺失或非数字（HTTP 日期写法）返回 0。"""
+    try:
+        return max(0.0, float((getattr(resp, "headers", None) or {}).get("Retry-After", 0)))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _short(s: str, n: int = 200) -> str:

@@ -166,40 +166,39 @@ def build_output(input_path: str, output_path: str,
         reader_orig = (PdfReader(input_path)
                        if mode in ("bilingual", "sidebyside", "updown") else None)
 
+        from pypdf import Transformation
+
+        # 覆盖层一律合并进**已挂到 writer 上的页**：往 reader 的游离页上
+        # merge_page 已被 pypdf 弃用（"proved being unreliable"），7.0 起移除。
         for i, page in enumerate(reader_main.pages):
             layout = layouts[i] if i < len(layouts) else None
             overlay = _make_overlay(layout, clipper) if layout else None
+            ov_page = PdfReader(overlay).pages[0] if overlay is not None else None
+
+            if mode in ("sidebyside", "updown"):
+                w = float(page.mediabox.width)
+                h = float(page.mediabox.height)
+                if mode == "sidebyside":
+                    # T4 左右对照：2W×H 宽页，左贴原文、右贴译文
+                    canvas_page = writer.add_blank_page(width=2 * w, height=h)
+                    orig_at, tr_at = Transformation(), Transformation().translate(tx=w, ty=0)
+                else:
+                    # 上下对照：W×2H 长页，上原文下译文。页宽不变，「适合宽度」下
+                    # 仍是 100%——左右对照在同样模式下只有一半，这是它存在的理由。
+                    # PDF 坐标原点在**左下**、y 向上：上半 = ty h~2h，下半 = ty 0~h。
+                    canvas_page = writer.add_blank_page(width=w, height=2 * h)
+                    orig_at, tr_at = Transformation().translate(tx=0, ty=h), Transformation()
+                canvas_page.merge_transformed_page(reader_orig.pages[i], orig_at)
+                canvas_page.merge_transformed_page(page, tr_at)
+                if ov_page is not None:   # 覆盖层与译文页同一位移
+                    canvas_page.merge_transformed_page(ov_page, tr_at)
+                continue
 
             if mode == "bilingual":
                 writer.add_page(reader_orig.pages[i])  # 先放原文页
-
-            if overlay is not None:
-                ov_page = PdfReader(overlay).pages[0]
-                page.merge_page(ov_page)
-
-            if mode == "sidebyside":
-                # T4 左右对照：2W×H 宽页，左贴原文、右贴译文
-                from pypdf import Transformation
-                w = float(page.mediabox.width)
-                h = float(page.mediabox.height)
-                wide = writer.add_blank_page(width=2 * w, height=h)
-                wide.merge_transformed_page(
-                    reader_orig.pages[i], Transformation())
-                wide.merge_transformed_page(
-                    page, Transformation().translate(tx=w, ty=0))
-            elif mode == "updown":
-                # 上下对照：W×2H 长页，上原文下译文。页宽不变，「适合宽度」下
-                # 仍是 100%——左右对照在同样模式下只有一半，这是它存在的理由。
-                from pypdf import Transformation
-                w = float(page.mediabox.width)
-                h = float(page.mediabox.height)
-                tall = writer.add_blank_page(width=w, height=2 * h)
-                # PDF 坐标原点在**左下**、y 向上：上半 = ty h~2h，下半 = ty 0~h。
-                tall.merge_transformed_page(
-                    reader_orig.pages[i], Transformation().translate(tx=0, ty=h))
-                tall.merge_transformed_page(page, Transformation())
-            else:
-                writer.add_page(page)  # 译文页（translated 模式即为唯一页）
+            out_page = writer.add_page(page)  # 译文页（translated 模式即为唯一页）
+            if ov_page is not None:
+                out_page.merge_page(ov_page)
 
         with open(output_path, "wb") as f:
             writer.write(f)

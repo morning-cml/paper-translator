@@ -79,7 +79,7 @@ Translation/                     # 外层 = 用户桌面工作区
    ├─ translate_cli.py           # 命令行入口（--mock/--pages/--mode/--domain/--no-cache）
    ├─ selftest_backend.py        # 自测脚本（真实论文优先在 ROOT.parent 即外层查找）
    ├─ requirements.txt           # 依赖（纯 ASCII，避免 pip 用 GBK 读取报错）
-   ├─ config.example.json        # 配置模板（含全部 21 个字段）
+   ├─ config.example.json        # 配置模板（含全部可持久化字段，与 config.DEFAULTS 一致）
    ├─ config.json                # 运行时配置（含 API Key，勾选“记住”时生成；.gitignore 已排除）
    ├─ glossary/cs_terms.csv      # 计算机领域术语库（en,zh,note，184 条）
    ├─ fonts/                     # （可选）思源宋体/黑体 ttf/otf，fitz 后端自动嵌入
