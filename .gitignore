@@ -8,3 +8,8 @@ __pycache__/
 .pytest_cache/
 Thumbs.db
 desktop.ini
+
+# ── AI 工作笔记（只留本地给 AI 用，任何一层目录都不入库）──
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
